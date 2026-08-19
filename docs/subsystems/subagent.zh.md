@@ -29,6 +29,17 @@ interface SubagentCapabilities {
   readonly depthLimit: boolean
   readonly toolFilter: boolean
   readonly persona: boolean
+  /**
+   * Whether the provider can RESUME an engine session across runs. Absent or
+   * false means every run starts fresh. Providers that support it accept
+   * {@link SubagentStartRequest.continueFrom} and report
+   * {@link SubagentResult.continuationId}; the engine backends (claude-code,
+   * codex) use their native long-lived sessions (Claude resume, Codex
+   * thread/resume) so a harness session's turns share one engine conversation.
+   */
+  readonly continuation?: boolean
+  /** Whether the provider accepts {@link SubagentStartRequest.reasoningEffort}. */
+  readonly reasoningEffort?: boolean
 }
 ```
 
@@ -63,6 +74,20 @@ interface SubagentStartRequest {
    * remaining turn work when it fires afterward.
    */
   readonly signal: AbortSignal
+  /**
+   * Engine-session id to resume instead of starting fresh: the provider
+   * continues the conversation recorded under {@link SubagentResult.continuationId}
+   * from an earlier run. Requires {@link SubagentCapabilities.continuation};
+   * rejected at start otherwise.
+   */
+  readonly continueFrom?: string
+  /**
+   * Adapter-owned reasoning effort id for this run, when the caller selects
+   * one. Requires {@link SubagentCapabilities.reasoningEffort}; rejected at
+   * start otherwise. Providers map it to their native effort vocabulary
+   * (Claude Code SDK `effort`, Codex app-server `effort`).
+   */
+  readonly reasoningEffort?: string
   readonly agentOptions?: AgentOptions
   /**
    * Object-rooted JSON Schema within `assertObjectJsonSchema`'s enforced subset. Start rejects
@@ -322,6 +347,12 @@ interface SubagentResult {
    */
   readonly output: ContentBlock[]
   /**
+   * Engine-session id the caller should pass as {@link SubagentStartRequest.continueFrom}
+   * on the next run to continue this conversation. Present only when the
+   * provider supports continuation and the run established a resumable session.
+   */
+  readonly continuationId?: string
+  /**
    * The structured result after a requested `outputSchema` was successfully
    * satisfied. Requesting a schema does not guarantee presence: a provider can
    * end with `stopReason: 'error'` when the child fails or finishes without a
@@ -360,7 +391,7 @@ interface SubagentStopReasonMap {
 
 ## 单次 run：`SubagentRun`
 
-`SubagentRun` 是消费方持有的、指向一个已发布单次子 agent 的句柄——一次可 dispose 的前台委派，只有一个结果，绝不是持久化子 agent handle。发布后的提示词提交、轮次工作与基础设施故障归 `result` 所有。消费方 await 该结果并始终 dispose 该 run，直至完全停稳。子 agent 失败时以非 completed 的 stop reason resolve；只有无法表示的基础设施故障才会 reject。run 没有 steering，也没有恢复：可继续对话根本没有 run，因为继续执行管理器直接持有它们的 `AgentHandle`，并通过子 agent 自己的收件箱为每个轮次排序。
+`SubagentRun` 是消费方持有的已发布单次子 agent 句柄，一次可 dispose 的前台委派并带有一个结果。原生 engine 提供方可以通过 `continuationId` 恢复其产品会话；这与 Harness 继续执行管理器持有的持久化子 agent 句柄不同。消费方 await 结果并始终 dispose 该 run 直至完全停稳。子 agent 失败时以非 completed 的 stop reason resolve；只有无法表示的基础设施故障才会 reject。
 
 ```ts type-equiv
 /**
@@ -393,6 +424,13 @@ interface SubagentRun {
    * represent as a stop reason.
    */
   readonly result: Promise<SubagentResult>
+  /**
+   * Live text updates while the run produces them, when the provider streams
+   * (claude-code and codex forward their incremental assistant text). Absent
+   * for providers without streaming. The iterable terminates when the run
+   * settles; consumers may ignore it and use only the final result.
+   */
+  readonly updates?: AsyncIterable<SubagentUpdate>
   /**
    * Cancel remaining work, reach child quiescence, and release resources.
    * Idempotent.
@@ -648,7 +686,7 @@ async start(name: string, request: SubagentStartRequest): Promise<SubagentRun>
 
 Types: [Agent](core.md) · [ContentBlock](llm-streaming.md) · [MessageId](llm-streaming.md) · [SessionId](core.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:171`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:172`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagent-events"></a>
 
@@ -674,7 +712,7 @@ A published child settled. Scope-filtered dispatch uses the same delegating pare
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:166`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:167`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentprovider-added--emit"></a>
 
@@ -691,7 +729,7 @@ A provider became resolvable in the registry.
 'subagent/provider-added'(provider: SubagentProvider): void
 ```
 
-Source: [`packages/subagent/subagent/src/index.ts:140`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:141`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentprovider-removed--emit"></a>
 
@@ -708,7 +746,7 @@ A provider left the registry. Accepted runs remain holder-owned.
 'subagent/provider-removed'(name: string): void
 ```
 
-Source: [`packages/subagent/subagent/src/index.ts:146`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:147`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentstart--emit"></a>
 
@@ -732,5 +770,5 @@ A provider established a published child. For in-process providers, `ctx.agents.
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:157`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:158`](../../packages/subagent/subagent/src/index.ts)
 <!-- END GENERATED cordis-surface -->

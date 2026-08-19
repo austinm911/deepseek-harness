@@ -8,8 +8,28 @@
  */
 
 import type { Readable, Writable } from 'node:stream'
+
+/**
+ * Map a Harness effort id to the Codex app-server effort vocabulary.
+ * @param effort - Harness reasoning effort identifier.
+ * @returns Codex app-server effort value.
+ */
+export function codexEffort(effort: string): string {
+  switch (effort) {
+    case 'off':
+      return 'minimal'
+    case 'low':
+      return 'low'
+    case 'medium':
+      return 'medium'
+    case 'high':
+      return 'high'
+    default:
+      throw new Error(`subagent-codex: unsupported reasoning effort ${JSON.stringify(effort)}`)
+  }
+}
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { SubagentResult } from '@deepseek-ai/dsh-subagent'
+import type { SubagentResult, SubagentUpdate } from '@deepseek-ai/dsh-subagent'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 
 type JsonObject = Record<string, unknown>
@@ -93,11 +113,15 @@ export class CodexAppServerWire {
   }> = []
   private lastFinalAnswer: string | undefined
   private lastUnphasedAnswer: string | undefined
+  private readonly updateQueue: SubagentUpdate[] = []
+  private updateWaiter: { resolve: () => void } | undefined
+  private updatesClosed = false
   private closed = false
 
   constructor(
     private readonly input: Readable,
     output: Writable,
+    private readonly continuation: boolean,
   ) {
     this.transport = new JsonRpcLineTransport(input, output)
     // Fatal protocol state can arrive after the current guarded operation has
@@ -146,21 +170,62 @@ export class CodexAppServerWire {
   }
 
   /**
-   * Create the run's private ephemeral thread and retain its identity.
+   * Create (or resume) the run's private thread and retain its identity.
+   * Ephemeral by default (one-shot posture); with continuation enabled the
+   * thread persists and `continueFrom` resumes the earlier conversation via
+   * `thread/resume`.
    * @param cwd - parent Session workspace.
+   * @param continueFrom - engine thread id to resume, or `undefined` for a fresh thread.
    * @param signal - unpublished-start cancellation.
    */
-  async startThread(cwd: string, signal: AbortSignal): Promise<void> {
+  async startThread(cwd: string, continueFrom: string | undefined, signal: AbortSignal): Promise<void> {
+    if (continueFrom !== undefined) {
+      const response = object(await this.guarded(this.transport.request('thread/resume', {
+        threadId: continueFrom,
+        cwd,
+      }, signal), signal), 'thread/resume response')
+      const thread = object(response.thread, 'thread/resume thread')
+      this.threadId = string(thread.id, 'thread/resume thread id')
+      return
+    }
     const response = object(await this.guarded(this.transport.request('thread/start', {
       cwd,
-      ephemeral: true,
+      ephemeral: !this.continuation,
     }, signal), signal), 'thread/start response')
     const thread = object(response.thread, 'thread/start thread')
     const id = string(thread.id, 'thread/start thread id')
-    if (thread.ephemeral !== true) {
+    if (!this.continuation && thread.ephemeral !== true) {
       throw new Error('subagent-codex: app-server did not create an ephemeral thread')
     }
     this.threadId = id
+  }
+
+  /** Wake one pending update iterator consumer. */
+  private wakeUpdates(): void {
+    if (this.updateWaiter !== undefined) {
+      this.updateWaiter.resolve()
+      this.updateWaiter = undefined
+    }
+  }
+
+  /**
+   * Live text updates while the run streams, terminating when the turn settles.
+   * @returns An async iterable of incremental assistant text updates.
+   */
+  updates(): AsyncIterable<SubagentUpdate> {
+    return {
+      [Symbol.asyncIterator]: async function* (this: CodexAppServerWire) {
+        while (true) {
+          while (this.updateQueue.length > 0) {
+            yield this.updateQueue.shift() as SubagentUpdate
+          }
+          if (this.updatesClosed || this.closed) return
+          await new Promise<void>((resolve) => {
+            this.updateWaiter = { resolve }
+          })
+        }
+      }.bind(this),
+    }
   }
 
   /**
@@ -168,39 +233,54 @@ export class CodexAppServerWire {
    * terminal notification.
    * @param texts - already validated task text blocks.
    * @param signal - local cancellation for the published run.
+   * @param model - Native model override, when selected.
+   * @param effort - Harness reasoning effort identifier, when selected.
    * @returns the shared subagent result.
    */
   async runTurn(
     texts: readonly string[],
     signal: AbortSignal,
+    model: string | undefined,
+    effort: string | undefined,
   ): Promise<SubagentResult> {
-    const completion = Promise.withResolvers<JsonObject>()
-    this.turnCompleted = completion
-    const threadId = this.threadId as string
-    const response = object(await this.guarded(this.transport.request('turn/start', {
-      threadId,
-      input: texts.map(text => ({ type: 'text', text, text_elements: [] })),
-    }, signal), signal), 'turn/start response')
-    const turn = object(response.turn, 'turn/start turn')
-    this.commitTurnId(string(turn.id, 'turn/start turn id'))
+    try {
+      const completion = Promise.withResolvers<JsonObject>()
+      this.turnCompleted = completion
+      const threadId = this.threadId as string
+      const response = object(await this.guarded(this.transport.request('turn/start', {
+        threadId,
+        input: texts.map(text => ({ type: 'text', text, text_elements: [] })),
+        ...(model === undefined ? {} : { model }),
+        ...(effort === undefined ? {} : { effort: codexEffort(effort) }),
+      }, signal), signal), 'turn/start response')
+      const turn = object(response.turn, 'turn/start turn')
+      this.commitTurnId(string(turn.id, 'turn/start turn id'))
 
-    const completed = await this.guarded(completion.promise, signal)
-    const terminal = object(completed.turn, 'turn/completed turn')
-    const status = terminal.status
-    if (isContextWindowExceeded(terminal)) {
-      return { output: this.collectOutput(), stopReason: 'max-tokens' }
+      const completed = await this.guarded(completion.promise, signal)
+      const terminal = object(completed.turn, 'turn/completed turn')
+      const status = terminal.status
+      if (isContextWindowExceeded(terminal)) {
+        return { output: this.collectOutput(), stopReason: 'max-tokens' }
+      }
+      if (status !== 'completed') {
+        const detail = status === 'failed'
+          ? `: ${JSON.stringify(terminal.error)}`
+          : ''
+        throw new Error(`subagent-codex: Codex turn ended with status ${String(status)}${detail}`)
+      }
+      const output = this.collectOutput()
+      if (output.length === 0) {
+        throw new Error('subagent-codex: Codex completed without a final answer')
+      }
+      return {
+        output,
+        stopReason: 'completed',
+        ...(this.continuation && this.threadId !== undefined ? { continuationId: this.threadId } : {}),
+      }
+    } finally {
+      this.updatesClosed = true
+      this.wakeUpdates()
     }
-    if (status !== 'completed') {
-      const detail = status === 'failed'
-        ? `: ${JSON.stringify(terminal.error)}`
-        : ''
-      throw new Error(`subagent-codex: Codex turn ended with status ${String(status)}${detail}`)
-    }
-    const output = this.collectOutput()
-    if (output.length === 0) {
-      throw new Error('subagent-codex: Codex completed without a final answer')
-    }
-    return { output, stopReason: 'completed' }
   }
 
   /**
@@ -230,6 +310,8 @@ export class CodexAppServerWire {
   close(): void {
     if (this.closed) return
     this.closed = true
+    this.updatesClosed = true
+    this.wakeUpdates()
     this.input.off('end', this.onInputEnd)
     this.transport.close()
   }
@@ -318,6 +400,22 @@ export class CodexAppServerWire {
   }
 
   private handleNotification(method: string, params: JsonObject): void {
+    if (method === 'item/agentMessage/delta') {
+      const threadId = string(params.threadId, 'item/agentMessage/delta thread id')
+      if (threadId !== this.threadId) return
+      const id = string(params.turnId, 'item/agentMessage/delta turn id')
+      if (this.turnId === undefined) {
+        if (this.turnCompleted !== undefined) {
+          this.observePendingTurnId(id)
+          this.earlyTurnNotifications.push({ method, params })
+        }
+        return
+      }
+      if (id !== this.turnId) return
+      this.updateQueue.push({ kind: 'text-delta', text: string(params.delta, 'item/agentMessage/delta text') })
+      this.wakeUpdates()
+      return
+    }
     if (method === 'turn/started') {
       const threadId = string(params.threadId, 'turn/started thread id')
       if (threadId !== this.threadId) return
@@ -354,6 +452,8 @@ export class CodexAppServerWire {
       return
     }
     if (method !== 'turn/completed') return
+    this.updatesClosed = true
+    this.wakeUpdates()
     const threadId = string(params.threadId, 'turn/completed thread id')
     if (threadId !== this.threadId) return
     const turn = object(params.turn, 'turn/completed turn')

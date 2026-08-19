@@ -893,6 +893,27 @@ export interface DeepSeekCatalogModel {
 
 来源：[`packages/llm/llm-deepseek/src/index.ts:62`](../packages/llm/llm-deepseek/src/index.ts)
 
+<a id="deepseek-aidsh-llm-engine"></a>
+
+## `@deepseek-ai/dsh-llm-engine`
+
+需要：`llm` · `subagents`
+
+```ts config-catalog
+/** Plugin config: the long-lived session switch for both engine routes. */
+export interface Config {
+  /**
+   * Whether turns resume the engine's long-lived session (Claude `resume`,
+   * Codex `thread/resume`) instead of starting fresh. Requires the
+   * `continuation: true` option on the matching backend rows; engine state
+   * then persists under the native CLI config dirs.
+   */
+  continuation?: boolean
+}
+```
+
+来源：[`packages/llm/llm-engine/src/index.ts:27`](../packages/llm/llm-engine/src/index.ts)
+
 <a id="deepseek-aidsh-llm-pi-ai"></a>
 
 ## `@deepseek-ai/dsh-llm-pi-ai`
@@ -2083,7 +2104,7 @@ export type PermissionPolicy = 'allow' | 'reject'
 需要：`subagents` · `subprocess`
 
 ```ts config-catalog
-/** Deployment-owned environment and process-release bound. */
+/** Deployment-owned environment, process-release, and continuation options. */
 export interface Config {
   /**
    * Explicit environment entries layered over the subprocess seam's
@@ -2092,6 +2113,12 @@ export interface Config {
   env?: Record<string, string>
   /** Grace in milliseconds for Claude Code process-tree termination. */
   disposeGraceMs?: number
+  /**
+   * Whether runs persist their SDK session and resume earlier conversations
+   * (`continueFrom`). Persistence writes session state under the native
+   * Claude Code config dir; the one-shot default touches no native state.
+   */
+  continuation?: boolean
 }
 ```
 
@@ -2113,6 +2140,12 @@ export interface Config {
   env?: Record<string, string>
   /** Grace in milliseconds for app-server process-tree termination. */
   disposeGraceMs?: number
+  /**
+   * Whether runs persist their thread and resume earlier conversations
+   * (`continueFrom`). Thread persistence writes under the native Codex home;
+   * the one-shot default touches no native state.
+   */
+  continuation?: boolean
 }
 ```
 
@@ -3131,11 +3164,14 @@ export interface Config {
 - `@deepseek-ai/dsh-client-web`（[`packages/client/web/src/index.ts`](../packages/client/web/src/index.ts)）
 - `@deepseek-ai/dsh-client-web-react`（[`packages/client/web-react/src/index.ts`](../packages/client/web-react/src/index.ts)）
 - `@deepseek-ai/dsh-cmdline`（[`packages/boot/cmdline/src/index.ts`](../packages/boot/cmdline/src/index.ts)）
+- `@deepseek-ai/dsh-engine-session-demo`（[`packages/examples/engine-session-demo/src/index.ts`](../packages/examples/engine-session-demo/src/index.ts)）
 - `@deepseek-ai/dsh-home-paths`（[`packages/util/home-paths/src/index.ts`](../packages/util/home-paths/src/index.ts)）
 - `@deepseek-ai/dsh-hook-protocol`（[`packages/hooks/hook-protocol/src/index.ts`](../packages/hooks/hook-protocol/src/index.ts)）
 - `@deepseek-ai/dsh-launch-environment`（[`packages/util/launch-environment/src/index.ts`](../packages/util/launch-environment/src/index.ts)）
 - `@deepseek-ai/dsh-llm-mock-server`（[`packages/test-support/llm-mock-server/src/index.ts`](../packages/test-support/llm-mock-server/src/index.ts)）
 - `@deepseek-ai/dsh-loader-smoke`（[`packages/test-support/loader-smoke/src/index.ts`](../packages/test-support/loader-smoke/src/index.ts)）
+- `@deepseek-ai/dsh-multi-provider`（[`packages/bundle/multi-provider/src/index.ts`](../packages/bundle/multi-provider/src/index.ts)）
+- `@deepseek-ai/dsh-multi-provider-demo`（[`packages/examples/multi-provider-demo/src/index.ts`](../packages/examples/multi-provider-demo/src/index.ts)）
 - `@deepseek-ai/dsh-native-command`（[`packages/util/native-command/src/index.ts`](../packages/util/native-command/src/index.ts)）
 - `@deepseek-ai/dsh-output-retention`（[`packages/util/output-retention/src/index.ts`](../packages/util/output-retention/src/index.ts)）
 - `@deepseek-ai/dsh-sandbox-windows-acl`（[`packages/sandbox/sandbox-windows-acl/src/index.ts`](../packages/sandbox/sandbox-windows-acl/src/index.ts)）

@@ -29,6 +29,17 @@ interface SubagentCapabilities {
   readonly depthLimit: boolean
   readonly toolFilter: boolean
   readonly persona: boolean
+  /**
+   * Whether the provider can RESUME an engine session across runs. Absent or
+   * false means every run starts fresh. Providers that support it accept
+   * {@link SubagentStartRequest.continueFrom} and report
+   * {@link SubagentResult.continuationId}; the engine backends (claude-code,
+   * codex) use their native long-lived sessions (Claude resume, Codex
+   * thread/resume) so a harness session's turns share one engine conversation.
+   */
+  readonly continuation?: boolean
+  /** Whether the provider accepts {@link SubagentStartRequest.reasoningEffort}. */
+  readonly reasoningEffort?: boolean
 }
 ```
 
@@ -63,6 +74,20 @@ interface SubagentStartRequest {
    * remaining turn work when it fires afterward.
    */
   readonly signal: AbortSignal
+  /**
+   * Engine-session id to resume instead of starting fresh: the provider
+   * continues the conversation recorded under {@link SubagentResult.continuationId}
+   * from an earlier run. Requires {@link SubagentCapabilities.continuation};
+   * rejected at start otherwise.
+   */
+  readonly continueFrom?: string
+  /**
+   * Adapter-owned reasoning effort id for this run, when the caller selects
+   * one. Requires {@link SubagentCapabilities.reasoningEffort}; rejected at
+   * start otherwise. Providers map it to their native effort vocabulary
+   * (Claude Code SDK `effort`, Codex app-server `effort`).
+   */
+  readonly reasoningEffort?: string
   readonly agentOptions?: AgentOptions
   /**
    * Object-rooted JSON Schema within `assertObjectJsonSchema`'s enforced subset. Start rejects
@@ -322,6 +347,12 @@ interface SubagentResult {
    */
   readonly output: ContentBlock[]
   /**
+   * Engine-session id the caller should pass as {@link SubagentStartRequest.continueFrom}
+   * on the next run to continue this conversation. Present only when the
+   * provider supports continuation and the run established a resumable session.
+   */
+  readonly continuationId?: string
+  /**
    * The structured result after a requested `outputSchema` was successfully
    * satisfied. Requesting a schema does not guarantee presence: a provider can
    * end with `stopReason: 'error'` when the child fails or finishes without a
@@ -360,7 +391,7 @@ interface SubagentStopReasonMap {
 
 ## A one-shot run: `SubagentRun`
 
-`SubagentRun` is the consumer-owned handle for a published one-shot child — one disposable foreground delegation with one result, never a durable child handle. Prompt submission, turn work, and infrastructure faults after publication belong to `result`. Consumers await that result and always dispose the run to reach quiescence. Child failures resolve with a non-completed stop reason; only unrepresentable infrastructure faults reject. A run has no steering and no resume: continuable conversations have no run at all, because the continuation manager holds their `AgentHandle` directly and orders every turn through the child's own inbox.
+`SubagentRun` is the consumer-owned handle for a published one-shot child — one disposable foreground delegation with one result. Native engine providers may resume their product session through `continuationId`; that is distinct from the Harness continuation manager's durable child handles. Consumers await the result and always dispose the run to reach quiescence. Child failures resolve with a non-completed stop reason; only unrepresentable infrastructure faults reject.
 
 ```ts type-equiv
 /**
@@ -393,6 +424,13 @@ interface SubagentRun {
    * represent as a stop reason.
    */
   readonly result: Promise<SubagentResult>
+  /**
+   * Live text updates while the run produces them, when the provider streams
+   * (claude-code and codex forward their incremental assistant text). Absent
+   * for providers without streaming. The iterable terminates when the run
+   * settles; consumers may ignore it and use only the final result.
+   */
+  readonly updates?: AsyncIterable<SubagentUpdate>
   /**
    * Cancel remaining work, reach child quiescence, and release resources.
    * Idempotent.
@@ -646,7 +684,7 @@ async start(name: string, request: SubagentStartRequest): Promise<SubagentRun>
 
 Types: [Agent](core.md) · [ContentBlock](llm-streaming.md) · [MessageId](llm-streaming.md) · [SessionId](core.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:171`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:172`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagent-events"></a>
 
@@ -672,7 +710,7 @@ A published child settled. Scope-filtered dispatch uses the same delegating pare
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:166`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:167`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentprovider-added--emit"></a>
 
@@ -689,7 +727,7 @@ A provider became resolvable in the registry.
 'subagent/provider-added'(provider: SubagentProvider): void
 ```
 
-Source: [`packages/subagent/subagent/src/index.ts:140`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:141`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentprovider-removed--emit"></a>
 
@@ -706,7 +744,7 @@ A provider left the registry. Accepted runs remain holder-owned.
 'subagent/provider-removed'(name: string): void
 ```
 
-Source: [`packages/subagent/subagent/src/index.ts:146`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:147`](../../packages/subagent/subagent/src/index.ts)
 
 <a id="subagentstart--emit"></a>
 
@@ -730,5 +768,5 @@ A provider established a published child. For in-process providers, `ctx.agents.
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/subagent/subagent/src/index.ts:157`](../../packages/subagent/subagent/src/index.ts)
+Source: [`packages/subagent/subagent/src/index.ts:158`](../../packages/subagent/subagent/src/index.ts)
 <!-- END GENERATED cordis-surface -->
