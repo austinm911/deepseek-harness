@@ -16,3 +16,6 @@ provider: kimi-coding
 provider: anthropic
   name: Claude (API)
   models: claude-haiku-4-5, claude-opus-5, claude-sonnet-4-5
+provider: anthropic-subscription
+  name: Claude (Pro/Max subscription)
+  models: claude-haiku-4-5, claude-opus-5, claude-sonnet-4-5

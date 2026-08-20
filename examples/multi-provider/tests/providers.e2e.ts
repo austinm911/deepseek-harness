@@ -31,6 +31,10 @@ const SCENARIOS: ProviderScenario[] = [
   { provider: 'google', model: 'gemini-2.5-flash', keyEnv: 'GOOGLE_API_KEY' },
   { provider: 'minimax', model: 'MiniMax-M3', keyEnv: 'MINIMAX_API_KEY' },
   { provider: 'kimi-coding', model: 'kimi-for-coding', keyEnv: 'KIMI_CODING_API_KEY' },
+  // The subscription route's credential is an OAuth token, not an api key:
+  // this scenario is what proves pi-ai reaches Claude with it, since the
+  // token takes a different auth path on the wire than every key above.
+  { provider: 'anthropic-subscription', model: 'claude-sonnet-4-5', keyEnv: 'ANTHROPIC_OAUTH_TOKEN' },
 ]
 
 /**

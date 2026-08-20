@@ -32,6 +32,8 @@ SDK 接收由文本块原样拼接成的任务。提供方会完整迭代 SDK �
 
 生产环境从子进程执行世界清除凭证后的 `PATH` 解析 `claude`，再应用显式 `env` 条目，并把所得路径作为 `pathToClaudeCodeExecutable` 交给 SDK。在 Windows 上，解析到的 `.cmd` 或 `.bat` 路径会作为带引号、仅供本次 spawn 使用的环境值交给 `cmd.exe /v:off` 展开一次，因此合法路径中的元字符仍只是数据。锁定版本的 SDK 随后把固定命令行选项放在 cmd 的命令尾部；这些选项不含 cmd 元字符，也并不是普通的 Windows argv。原生设置与身份验证继续是权威来源。本插件不安装另一份 CLI、不选择模型、不创建产品主目录、不执行登录，也不探测账户。具有凭证特征的环境变量会在显式 `env` 覆盖生效前被清除，因此供子进程使用的 API 密钥或 token 必须在该配置中显式提供。除非被覆盖，`ANTHROPIC_BASE_URL` 等非凭证端点变量以及 `PATH` 和 `HOME` 等普通环境变量仍会被继承。
 
+子进程的身份验证有两条路径。若宿主已通过 CLI 自己的凭证存储登录——操作系统钥匙串条目或 `~/.claude/.credentials.json`——SDK 会直接读取该存储，无需任何环境变量。若宿主唯一的凭证是 `claude setup-token` 产出的订阅 OAuth token，就必须通过 `env` 转发 CLI 自己的 `CLAUDE_CODE_OAUTH_TOKEN` 变量：子进程机制会清除所有匹配 `/KEY|PASSWORD|SECRET|TOKEN/i` 的环境变量名，未经转发的 token 永远到不了子进程，CLI 会报告 `Not logged in`。按 Claude API 计费的 `ANTHROPIC_API_KEY` 以同样方式转发。请把整个 `env` 值写成一个表达式，让未设置的变量对应的分支什么都不贡献；逐键写 `!!js process.env.NAME` 只会给 SDK 递上一个存在但值为 undefined 的条目。
+
 生产 `dsh` 不会安装或挂载这个可选提供方。选择启用它的 Profile 必须安装 `@deepseek-ai/dsh-subagent-claude-code`，并在 host plane（宿主平面）挂载一次；加载提供方本身不会在工具调用前启动 Claude 进程。完整 Agent Preset 携带对应的产品工具行并设置 `disabled: true`；复制一个 preset 后删除该字段，即可只向由该副本组装的 agent 暴露 `subagent_claude_code`。其 `one-shot` 策略会让省略 `run_in_background` 或传入 `false` 的调用继续在前台等待，而显式传入 `true` 会返回由父 agent 拥有的 Job ID，供 `job_output` 或 `job_kill` 使用。base host（基础宿主）与完整 preset 已提供通用作业注册表和控制工具。
 
 下列独立组装展示完整的显式能力。基于 `@deepseek-ai/dsh-base` 的 Profile 保留已有 Job 行，只新增产品提供方行并启用 preset 工具行，禁止重复挂载 Job 服务。
@@ -40,8 +42,11 @@ SDK 接收由文本块原样拼接成的任务。提供方会完整迭代 SDK �
 - id: subagent-claude-code
   name: '@deepseek-ai/dsh-subagent-claude-code'
   config:
-    env:
-      ANTHROPIC_API_KEY: !!js process.env.ANTHROPIC_API_KEY
+    env: !!js |
+      ({
+        ...(process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined ? {} : { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN }),
+        ...(process.env.ANTHROPIC_API_KEY === undefined ? {} : { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }),
+      })
 
 - id: jobs
   name: '@deepseek-ai/dsh-jobs-local'

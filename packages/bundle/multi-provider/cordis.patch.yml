@@ -10,53 +10,102 @@
 #
 # Credential references resolve per request through the credential seam, so
 # no key is inlined here: set GOOGLE_API_KEY, MINIMAX_API_KEY,
-# KIMI_CODING_API_KEY, and ANTHROPIC_API_KEY in the process environment or
-# the managed credentials document, exactly like DEEPSEEK_API_KEY.
+# KIMI_CODING_API_KEY, ANTHROPIC_API_KEY, and ANTHROPIC_OAUTH_TOKEN in the
+# process environment or the managed credentials document, exactly like
+# DEEPSEEK_API_KEY.
 #
 # The `anthropic` route is the KEY-based Claude API (Anthropic Messages
-# protocol). Claude Code and Codex are NOT here: they are agents, not model
-# endpoints, and authenticate with native OAuth through the delegation
-# backends composed below — no key of any kind.
+# protocol) and `anthropic-subscription` is the same protocol reached with a
+# Claude Pro/Max subscription token. Claude Code and Codex are NOT here: they
+# are agents, not model endpoints, and authenticate with native OAuth through
+# the delegation backends composed below — no key of any kind.
 
-- patch:
-    # The base bundle mounts dsh-llm-pi-ai dormant (zero routes) so the user's
-    # settings document decides which providers run. This pack activates the
-    # three flagship third-party routes with curated model catalogs; each
-    # entry's unset fields default from the installed pi-ai catalog (endpoint,
-    # wire protocol, capacities). A profile user can still narrow or extend
-    # the lists below through their own patch or the `llm-pi-ai:` settings
-    # section; deleting the `models` list serves the full installed catalog.
-    - id: llm-pi-ai
-      config:
-        providers:
-          google:
-            displayName: Gemini
-            apiKeyEnv: GOOGLE_API_KEY
-            models:
-              - id: gemini-2.5-flash
-              - id: gemini-2.5-pro
-              - id: gemini-3-pro-preview
-          minimax:
-            displayName: MiniMax
-            apiKeyEnv: MINIMAX_API_KEY
-            models:
-              - id: MiniMax-M2.7
-              - id: MiniMax-M2.7-highspeed
-              - id: MiniMax-M3
-          kimi-coding:
-            displayName: Kimi (Moonshot)
-            apiKeyEnv: KIMI_CODING_API_KEY
-            models:
-              - id: kimi-for-coding
-              - id: kimi-for-coding-highspeed
-              - id: k3
-          anthropic:
-            displayName: Claude (API)
-            apiKeyEnv: ANTHROPIC_API_KEY
-            models:
-              - id: claude-opus-5
-              - id: claude-sonnet-4-5
-              - id: claude-haiku-4-5
+# The base bundle mounts dsh-llm-pi-ai dormant (zero routes) so the user's
+# settings document decides which providers run. This pack activates the
+# flagship third-party routes with curated model catalogs; a catalog
+# route's unset fields default from the installed pi-ai catalog (endpoint,
+# wire protocol, capacities), and a route the catalog does not ship states
+# them itself. A profile user can still narrow or extend the lists below
+# through their own patch or the `llm-pi-ai:` settings section; deleting a
+# `models` list serves that route's full installed catalog.
+- id: llm-pi-ai
+  config:
+    providers:
+      google:
+        displayName: Gemini
+        apiKeyEnv: GOOGLE_API_KEY
+        models:
+          - id: gemini-2.5-flash
+          - id: gemini-2.5-pro
+          - id: gemini-3-pro-preview
+      minimax:
+        displayName: MiniMax
+        apiKeyEnv: MINIMAX_API_KEY
+        models:
+          - id: MiniMax-M2.7
+          - id: MiniMax-M2.7-highspeed
+          - id: MiniMax-M3
+      kimi-coding:
+        displayName: Kimi (Moonshot)
+        apiKeyEnv: KIMI_CODING_API_KEY
+        models:
+          - id: kimi-for-coding
+          - id: kimi-for-coding-highspeed
+          - id: k3
+      anthropic:
+        displayName: Claude (API)
+        apiKeyEnv: ANTHROPIC_API_KEY
+        models:
+          - id: claude-opus-5
+          - id: claude-sonnet-4-5
+          - id: claude-haiku-4-5
+      # Claude with a Claude Pro/Max subscription OAuth token instead of
+      # an API key, opt-in beside the key route above. The installed pi-ai
+      # catalog ships no such route, so this one spells out the wire
+      # protocol, the endpoint, and the model facts a catalog route
+      # inherits. pi-ai reads an `sk-ant-oat` credential as Bearer auth
+      # with Claude Code identity headers, which authenticates a non-CLI
+      # client with a subscription token: Anthropic-ToS gray, so the
+      # `claude-code` engine route below is the sanctioned subscription
+      # path.
+      anthropic-subscription:
+        displayName: Claude (Pro/Max subscription)
+        apiKeyEnv: ANTHROPIC_OAUTH_TOKEN
+        api: anthropic-messages
+        baseURL: https://api.anthropic.com
+        defaultInput:
+          - text
+          - image
+        defaultContextWindow: 1000000
+        defaultMaxTokens: 64000
+        models:
+          - id: claude-opus-5
+            name: Claude Opus 5
+            reasoningEfforts:
+              off:
+              minimal: low
+              low: low
+              medium: medium
+              high: high
+              xhigh: xhigh
+              max: max
+          - id: claude-sonnet-4-5
+            name: Claude Sonnet 4.5 (latest)
+            reasoningEfforts:
+              off:
+              minimal: low
+              low: low
+              medium: medium
+              high: high
+          - id: claude-haiku-4-5
+            name: Claude Haiku 4.5 (latest)
+            contextWindow: 200000
+            reasoningEfforts:
+              off:
+              minimal: low
+              low: low
+              medium: medium
+              high: high
 
 - insert:
     # The engine LLM adapter: registers `claude-code` and `codex` as provider
@@ -78,10 +127,19 @@
       config:
         continuation: true
 
+    # The subprocess seam scrubs credential-shaped names (/KEY|PASSWORD|
+    # SECRET|TOKEN/i) from every child, so the Claude Code CLI's own OAuth
+    # token variable reaches the CLI only through this explicit forward. The
+    # expression yields `{}` when the variable is unset, contributing no entry
+    # at all: a host logged in through the CLI's keychain entry or
+    # ~/.claude/.credentials.json is unaffected. A per-key
+    # `!!js process.env.CLAUDE_CODE_OAUTH_TOKEN` would instead hand the SDK a
+    # present-but-undefined entry.
     - id: subagent-claude-code
       name: '@deepseek-ai/dsh-subagent-claude-code'
       config:
         continuation: true
+        env: !!js "process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined ? {} : { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN }"
 
     # The model-facing tool rows carry the shipped-profile posture: present
     # but disabled, so composed agents do NOT grow the subagent_codex /

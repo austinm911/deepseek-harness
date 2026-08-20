@@ -365,9 +365,11 @@ describe('task admission and package contracts', () => {
     const run = await ctx.subagents.start('claude-code', request())
     child.settle({ exitCode: 9, signal: null })
     child.stdout.end()
-    await expect(run.result).resolves.toEqual({
+    await expect(run.result).resolves.toMatchObject({
       output: [],
       stopReason: 'error',
+      // The seam reports the cause so an LLM caller can name it.
+      failure: expect.stringContaining('ended without a result') as string,
     })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(
       'subagent-claude-code: child run failed (error):',
@@ -588,10 +590,46 @@ describe('query options and result mapping', () => {
     }))
   })
 
+  it('carries an explicitly forwarded CLI OAuth token through the scrub to the child', () => {
+    // The host's own CLAUDE_CODE_OAUTH_TOKEN is credential-shaped, so the
+    // seam removes it; only the provider's explicit `env` entry reaches the
+    // SDK options and the spawned CLI.
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'ambient-must-not-leak')
+    const child = fakeChild()
+    const spawnSpecs: SubprocessSpawnSpec[] = []
+    const spawn = (spec: SubprocessSpawnSpec): SubprocessHandle => {
+      spawnSpecs.push(spec)
+      return child.handle
+    }
+    const scrubbedSpec: ClaudeCodeRunSpec = {
+      cwd: '/workspace',
+      executable: '/native/claude',
+      env: {},
+      disposeGraceMs: 5,
+      continuation: false,
+      spawn,
+    }
+    const scrubbed = claudeQueryOptions(scrubbedSpec, new AbortController(), () => {}, undefined, undefined, undefined)
+    expect(scrubbed.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN')
+
+    const forwarded = claudeQueryOptions(
+      { ...scrubbedSpec, env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-fake-unit-token' } },
+      new AbortController(),
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+    )
+    expect(forwarded.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-fake-unit-token' })
+    forwarded.spawnClaudeCodeProcess!(sdkSpawnOptions({ env: forwarded.env! }))
+    expect(spawnSpecs[0]?.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-fake-unit-token' })
+  })
+
   it('accepts only a non-error success with a non-blank final result', () => {
     expect(successfulResult(success('exact final'))).toBe('exact final')
-    expect(() => successfulResult(success('answer', true)))
-      .toThrow('marked as an error')
+    // An `is_error` success states its cause in `result`; the failure carries it.
+    expect(() => successfulResult(success('Not logged in', true)))
+      .toThrow('Not logged in')
     expect(() => successfulResult(success(' \n ')))
       .toThrow('contained no answer')
     expect(() => successfulResult(failure(
@@ -659,7 +697,7 @@ describe('run publication, cancellation, and settlement', () => {
         request(),
         { ...fixture.spec, onError },
       )
-      await expect(run.result).resolves.toEqual({
+      await expect(run.result).resolves.toMatchObject({
         output: [],
         stopReason: 'error',
       })
@@ -677,7 +715,7 @@ describe('run publication, cancellation, and settlement', () => {
       new Error('iterator boom'),
     )
     const run = await startClaudeCodeRun(request(), fixture.spec)
-    await expect(run.result).resolves.toEqual({
+    await expect(run.result).resolves.toMatchObject({
       output: [],
       stopReason: 'error',
     })

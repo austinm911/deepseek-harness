@@ -32,6 +32,8 @@ The provider advertises no optional start-time capabilities and reports `inherit
 
 Production resolves `claude` from the subprocess execution world's credential-scrubbed `PATH`, with explicit `env` entries applied, and passes the resulting path to the SDK as `pathToClaudeCodeExecutable`. On Windows, a resolved `.cmd` or `.bat` path is carried as a quoted, per-spawn environment value that `cmd.exe /v:off` expands once, so valid path metacharacters remain data. The pinned SDK's fixed flags then occupy cmd's command tail and contain no cmd metacharacters; they are not ordinary Windows argv. Native settings and authentication remain authoritative. The plugin does not install another CLI, select a model, create a product home, log in, or probe an account. Credential-shaped ambient variables are removed before the explicit `env` overlay is applied, so an API key or token intended for the child must be supplied there. Non-credential endpoint variables such as `ANTHROPIC_BASE_URL`, along with ordinary ambient values such as `PATH` and `HOME`, remain inherited unless overridden.
 
+The child is authenticated one of two ways. On a host logged in through the CLI's own credential store — the OS keychain entry or `~/.claude/.credentials.json` — the SDK reads that store directly and no variable is needed. On a host whose only credential is the subscription OAuth token from `claude setup-token`, the CLI's own `CLAUDE_CODE_OAUTH_TOKEN` variable must be forwarded through `env`: the subprocess seam removes every ambient name matching `/KEY|PASSWORD|SECRET|TOKEN/i`, so an unforwarded token never reaches the child and the CLI reports `Not logged in`. An `ANTHROPIC_API_KEY` billed against the Claude API is forwarded the same way. Build the whole `env` value as one expression whose branches contribute nothing for an unset variable; a per-key `!!js process.env.NAME` instead hands the SDK a present-but-undefined entry.
+
 Production `dsh` does not install or mount this optional provider. A Profile that opts in must install `@deepseek-ai/dsh-subagent-claude-code` and mount it once on the host plane; loading the provider starts no Claude process until a tool call. Full Agent Presets carry a matching product tool row with `disabled: true`; copy a preset and remove that field to expose `subagent_claude_code` only to agents composed from the copy. Its `one-shot` policy keeps omitted or `false` `run_in_background` calls in the foreground, while explicit `true` returns a parent-owned Job id for `job_output` or `job_kill`. The base host and full presets already provide the generic Job registry and controls.
 
 The standalone composition below shows the complete explicit capability. A Profile based on `@deepseek-ai/dsh-base` keeps its existing Job rows, adds the product provider row, and enables the preset tool row instead of mounting duplicate Job services.
@@ -40,8 +42,11 @@ The standalone composition below shows the complete explicit capability. A Profi
 - id: subagent-claude-code
   name: '@deepseek-ai/dsh-subagent-claude-code'
   config:
-    env:
-      ANTHROPIC_API_KEY: !!js process.env.ANTHROPIC_API_KEY
+    env: !!js |
+      ({
+        ...(process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined ? {} : { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN }),
+        ...(process.env.ANTHROPIC_API_KEY === undefined ? {} : { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }),
+      })
 
 - id: jobs
   name: '@deepseek-ai/dsh-jobs-local'

@@ -19,8 +19,17 @@
 - id: subagent-codex
   name: '@deepseek-ai/dsh-subagent-codex'
 
+# The subprocess seam scrubs credential-shaped names (/KEY|PASSWORD|SECRET|
+# TOKEN/i) from every child, so the Claude Code CLI's own OAuth token variable
+# reaches the CLI only through this explicit forward. The expression yields
+# `{}` when the variable is unset, contributing no entry at all: a host logged
+# in through the CLI's keychain entry or ~/.claude/.credentials.json is
+# unaffected. A per-key `!!js process.env.CLAUDE_CODE_OAUTH_TOKEN` would
+# instead hand the SDK a present-but-undefined entry.
 - id: subagent-claude-code
   name: '@deepseek-ai/dsh-subagent-claude-code'
+  config:
+    env: !!js "process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined ? {} : { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN }"
 
 # The harness's own durable session store: the engine transcript lands here
 # as ordinary session events (user/message, assistant/message, turn/end).

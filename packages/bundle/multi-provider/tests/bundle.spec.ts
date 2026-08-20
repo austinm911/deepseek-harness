@@ -8,13 +8,13 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as yaml from 'js-yaml'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import { interpolate } from '@deepseek-ai/cordis-plugin-loader'
 
 type PatchRow = { id?: string; name?: string; disabled?: unknown; config?: Record<string, unknown> }
-type PatchEntry = { patch?: PatchRow[]; insert?: PatchRow[] }
+type PatchEntry = PatchRow & { insert?: PatchRow[] }
 
 function loadPatch(): { parsed: PatchEntry[]; rows: PatchRow[] } {
   const root = fileURLToPath(new URL('..', import.meta.url))
@@ -30,31 +30,59 @@ function loadPatch(): { parsed: PatchEntry[]; rows: PatchRow[] } {
   const parsed = yaml.load(readFileSync(patchPath, 'utf8'), { schema: entryListSchema })
   expect(Array.isArray(parsed)).toBe(true)
   const entries = parsed as PatchEntry[]
-  const rows = entries.flatMap(entry => [...(entry.patch ?? []), ...(entry.insert ?? [])])
+  // A patch-layer element is either an id-targeted override or an `insert`
+  // list; `applyEntryPatches` skips anything else, dropping its rows silently.
+  const rows = entries.flatMap(entry => entry.insert ?? [entry])
   return { parsed: entries, rows }
 }
 
 describe('dsh-multi-provider bundle', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
   it('declares a parseable patch list through the dsh.bundle.patch manifest field', () => {
     const { parsed } = loadPatch()
     expect(parsed.length).toBeGreaterThan(0)
+    for (const entry of parsed) {
+      expect(typeof entry.id === 'string' || Array.isArray(entry.insert)).toBe(true)
+    }
     // A later layer must be able to override the provider routes.
-    expect(parsed.some(entry => entry.patch?.some(row => row.id === 'llm-pi-ai'))).toBe(true)
+    expect(parsed.some(entry => entry.id === 'llm-pi-ai')).toBe(true)
   })
 
-  it('activates the Gemini, MiniMax, and Kimi routes on the pi-ai adapter', () => {
+  it('activates the Gemini, MiniMax, Kimi, and Claude routes on the pi-ai adapter', () => {
     const { rows } = loadPatch()
     // A patch row is id-targeted: it replaces the base bundle's `llm-pi-ai`
     // row, whose plugin name lives in base — the patch itself carries none.
     const piAi = rows.find(row => row.id === 'llm-pi-ai')
     expect(piAi?.config).toBeDefined()
-    const providers = (piAi?.config?.['providers'] ?? {}) as Record<string, { apiKeyEnv?: string; models?: { id: string }[] }>
-    expect(Object.keys(providers).sort()).toEqual(['anthropic', 'google', 'kimi-coding', 'minimax'])
+    const providers = (piAi?.config?.['providers'] ?? {}) as Record<string, {
+      apiKeyEnv?: string
+      displayName?: string
+      api?: string
+      baseURL?: string
+      models?: { id: string }[]
+    }>
+    expect(Object.keys(providers).sort()).toEqual([
+      'anthropic', 'anthropic-subscription', 'google', 'kimi-coding', 'minimax',
+    ])
     expect(providers['google']?.apiKeyEnv).toBe('GOOGLE_API_KEY')
     expect(providers['minimax']?.apiKeyEnv).toBe('MINIMAX_API_KEY')
     expect(providers['kimi-coding']?.apiKeyEnv).toBe('KIMI_CODING_API_KEY')
     expect(providers['anthropic']?.apiKeyEnv).toBe('ANTHROPIC_API_KEY')
-    for (const route of ['google', 'minimax', 'kimi-coding', 'anthropic']) {
+    // The subscription route reaches the same endpoint with a Claude Pro/Max
+    // OAuth token. The installed pi-ai catalog ships no such route, so the
+    // profile must name the wire protocol and the endpoint itself.
+    const subscription = providers['anthropic-subscription']
+    expect(subscription?.apiKeyEnv).toBe('ANTHROPIC_OAUTH_TOKEN')
+    expect(subscription?.displayName).toBe('Claude (Pro/Max subscription)')
+    expect(subscription?.api).toBe('anthropic-messages')
+    expect(subscription?.baseURL).toBe('https://api.anthropic.com')
+    expect((subscription?.models ?? []).map(model => model.id)).toEqual([
+      'claude-opus-5', 'claude-sonnet-4-5', 'claude-haiku-4-5',
+    ])
+    for (const route of ['google', 'minimax', 'kimi-coding', 'anthropic', 'anthropic-subscription']) {
       const models = providers[route]?.models ?? []
       expect(models.length).toBeGreaterThan(0)
       for (const model of models) expect(model.id.length).toBeGreaterThan(0)
@@ -95,6 +123,26 @@ describe('dsh-multi-provider bundle', () => {
     for (const name of ['@deepseek-ai/dsh-llm-pi-ai', '@deepseek-ai/dsh-llm-engine', '@deepseek-ai/dsh-subagent-codex', '@deepseek-ai/dsh-subagent-claude-code', '@deepseek-ai/dsh-tool-subagent']) {
       expect(manifest.dependencies).toHaveProperty(name)
     }
+  })
+
+  it('forwards the Claude Code CLI OAuth token only when the host sets it', () => {
+    // The subprocess seam scrubs credential-shaped names from every child, so
+    // the CLI's own token variable reaches it only through this row's `env`.
+    // A patch replaces a row's whole config, so `continuation` is restated.
+    const claudeCodeConfig = (): unknown => {
+      const { rows } = loadPatch()
+      return interpolate({}, rows.find(row => row.id === 'subagent-claude-code')?.config)
+    }
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat01-fake-unit-token')
+    expect(claudeCodeConfig()).toEqual({
+      continuation: true,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-fake-unit-token' },
+    })
+    // An unset variable must contribute no entry at all: a host authenticated
+    // through the CLI's own credential store needs no variable, and a per-key
+    // expression would leave a present-but-undefined entry behind.
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', undefined)
+    expect(claudeCodeConfig()).toEqual({ continuation: true, env: {} })
   })
 
   it('evaluates the patch list without JS surprises (evaluate round-trip)', () => {

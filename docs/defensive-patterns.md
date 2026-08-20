@@ -26,7 +26,7 @@ A user-supplied listener that throws must not reject the promise it runs inside 
 
 ## Never hand untrusted output the ambient environment or predictable paths
 
-Spawned commands get a scrubbed env (drop `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`) so harness credentials cannot leak into output, `env`, or spill files. Temp/spill files use a private (0700) dir, random names, and exclusive owner-only opens (`'wx'`, `0o600`) — predictable world-readable paths invite symlink races and disclosure.
+Spawned commands get a scrubbed env (drop `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`) so harness credentials cannot leak into output, `env`, or spill files. A child that genuinely needs one credential receives it through its spawn spec's explicit `env`, which merges after the scrub — deliberate per-child forwarding, never ambient inheritance. Temp/spill files use a private (0700) dir, random names, and exclusive owner-only opens (`'wx'`, `0o600`) — predictable world-readable paths invite symlink races and disclosure.
 
 ## Unlink link-shaped paths
 

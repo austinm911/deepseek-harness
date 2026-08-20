@@ -1,9 +1,10 @@
 # Snapshot-replay twin of cordis.yml: identical rows; replay skips .env
-# activated for Gemini, MiniMax, and Kimi, plus the Claude Code and Codex
-# delegation backends. This leaf is the runnable reference for the
-# @deepseek-ai/dsh-multi-provider bundle patch (packages/bundle/multi-provider):
-# the `llm-pi-ai` providers dict below mirrors the pack's patch exactly, and
-# the keyless boot spec keeps the two in sync.
+# activated for Gemini, MiniMax, Kimi, and both Claude routes, plus the
+# Claude Code and Codex delegation backends. This leaf is the runnable
+# reference for the @deepseek-ai/dsh-multi-provider bundle patch
+# (packages/bundle/multi-provider): the `llm-pi-ai` providers dict below
+# mirrors the pack's patch exactly, and the keyless boot spec keeps the two
+# in sync.
 #
 # The app bin loads the gitignored root `.env` into the process environment;
 # credentials resolve per request through the credential seam below, so no key
@@ -20,14 +21,16 @@
 - id: credentials
   name: '@deepseek-ai/dsh-credentials-local'
 
-# The generic pi-ai adapter: one instance owns the provider dict below. Each
-# route names a pi-ai catalog provider (google, minimax, kimi-coding,
-# anthropic) and a credential reference; unset fields (endpoint, wire
-# protocol, capacities) default from the installed catalog. The models lists
-# narrow each catalog to harness-appropriate flagships; deleting one serves
-# the full catalog. `anthropic` is the KEY-based Claude API — Claude Code and
-# Codex are not here, they are agents that authenticate with native OAuth
-# through the delegation backends below.
+# The generic pi-ai adapter: one instance owns the provider dict below. A
+# route naming a pi-ai catalog provider (google, minimax, kimi-coding,
+# anthropic) states a credential reference and lets the installed catalog
+# default the rest (endpoint, wire protocol, capacities); `anthropic-subscription`
+# is a route the catalog does not ship, so it states those itself. The models
+# lists narrow each catalog to harness-appropriate flagships; deleting one
+# serves the full catalog. `anthropic` is the KEY-based Claude API and
+# `anthropic-subscription` reaches the same protocol with a Claude Pro/Max
+# subscription token. Claude Code and Codex are not here, they are agents that
+# authenticate with native OAuth through the delegation backends below.
 - id: llm-pi-ai
   name: '@deepseek-ai/dsh-llm-pi-ai'
   config:
@@ -60,6 +63,50 @@
           - id: claude-opus-5
           - id: claude-sonnet-4-5
           - id: claude-haiku-4-5
+      # Claude with a Claude Pro/Max subscription OAuth token instead of an
+      # API key, opt-in beside the key route above. pi-ai reads an
+      # `sk-ant-oat` credential as Bearer auth with Claude Code identity
+      # headers, which authenticates a non-CLI client with a subscription
+      # token: Anthropic-ToS gray, so the `claude-code` engine route below is
+      # the sanctioned subscription path.
+      anthropic-subscription:
+        displayName: Claude (Pro/Max subscription)
+        apiKeyEnv: ANTHROPIC_OAUTH_TOKEN
+        api: anthropic-messages
+        baseURL: https://api.anthropic.com
+        defaultInput:
+          - text
+          - image
+        defaultContextWindow: 1000000
+        defaultMaxTokens: 64000
+        models:
+          - id: claude-opus-5
+            name: Claude Opus 5
+            reasoningEfforts:
+              off:
+              minimal: low
+              low: low
+              medium: medium
+              high: high
+              xhigh: xhigh
+              max: max
+          - id: claude-sonnet-4-5
+            name: Claude Sonnet 4.5 (latest)
+            reasoningEfforts:
+              off:
+              minimal: low
+              low: low
+              medium: medium
+              high: high
+          - id: claude-haiku-4-5
+            name: Claude Haiku 4.5 (latest)
+            contextWindow: 200000
+            reasoningEfforts:
+              off:
+              minimal: low
+              low: low
+              medium: medium
+              high: high
 
 # The engine LLM adapter: registers `claude-code` and `codex` as provider
 # routes on the LLM seam, backed by the delegation rows below. Selecting one
@@ -156,10 +203,18 @@
   config:
     continuation: true
 
+# The subprocess seam scrubs credential-shaped names (/KEY|PASSWORD|SECRET|
+# TOKEN/i) from every child, so the Claude Code CLI's own OAuth token variable
+# reaches the CLI only through this explicit forward. The expression yields
+# `{}` when the variable is unset, contributing no entry at all: a host logged
+# in through the CLI's keychain entry or ~/.claude/.credentials.json is
+# unaffected. A per-key `!!js process.env.CLAUDE_CODE_OAUTH_TOKEN` would
+# instead hand the SDK a present-but-undefined entry.
 - id: subagent-claude-code
   name: '@deepseek-ai/dsh-subagent-claude-code'
   config:
     continuation: true
+    env: !!js "process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined ? {} : { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN }"
 
 - id: tool-subagent-codex
   name: '@deepseek-ai/dsh-tool-subagent'

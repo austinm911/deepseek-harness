@@ -38,11 +38,11 @@ describe('multi-provider leaf over the real Loader (no key required)', () => {
 
     expect(stderr).toBe('')
     const output = JSON.parse(stdout) as InspectOutput
-    // The three pack routes, in composition order, with the curated catalogs.
+    // The pack routes, in composition order, with the curated catalogs.
     // Registration order is service-availability driven, not row order: the
     // engine adapter's routes commit before the pi-ai adapter's.
     expect(output.providers.map(entry => entry.provider)).toEqual([
-      'claude-code', 'codex', 'google', 'minimax', 'kimi-coding', 'anthropic',
+      'claude-code', 'codex', 'google', 'minimax', 'kimi-coding', 'anthropic', 'anthropic-subscription',
     ])
     expect(output.providers[2]).toMatchObject({
       name: 'Gemini',
@@ -58,6 +58,12 @@ describe('multi-provider leaf over the real Loader (no key required)', () => {
     })
     expect(output.providers[5]).toMatchObject({
       name: 'Claude (API)',
+      models: ['claude-haiku-4-5', 'claude-opus-5', 'claude-sonnet-4-5'],
+    })
+    // The subscription route the installed pi-ai catalog does not ship: same
+    // model ids as the key route, reached with a Claude Pro/Max OAuth token.
+    expect(output.providers[6]).toMatchObject({
+      name: 'Claude (Pro/Max subscription)',
       models: ['claude-haiku-4-5', 'claude-opus-5', 'claude-sonnet-4-5'],
     })
     // The engine LLM adapter registers the local CLI routes with their real
@@ -85,8 +91,8 @@ describe('multi-provider leaf over the real Loader (no key required)', () => {
   it('keeps the leaf providers dict in sync with the pack bundle patch', () => {
     const parsed = yaml.load(readFileSync(packPatchPath, 'utf8'), { schema: entryListSchema })
     expect(Array.isArray(parsed)).toBe(true)
-    const entries = parsed as { patch?: { id?: string; config?: Record<string, unknown> }[] }[]
-    const piAi = entries.flatMap(entry => entry.patch ?? []).find(row => row.id === 'llm-pi-ai')
+    const entries = parsed as { id?: string; insert?: unknown[]; config?: Record<string, unknown> }[]
+    const piAi = entries.find(entry => entry.id === 'llm-pi-ai')
     expect(piAi).toBeDefined()
     const providers = (piAi!.config!['providers'] ?? {}) as Record<
       string, { apiKeyEnv?: string; displayName?: string; models?: { id: string }[] }

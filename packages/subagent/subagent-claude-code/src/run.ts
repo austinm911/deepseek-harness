@@ -103,8 +103,11 @@ export function successfulResult(message: SDKResultMessage): string {
     || message.is_error
     || message.result.trim().length === 0
   ) {
+    // On an `is_error` success the CLI states the cause in `result` itself
+    // ("Not logged in · Please run /login"); dropping it hides the only
+    // actionable diagnostic the SDK gives us.
     const detail = message.subtype === 'success'
-      ? 'success result was marked as an error or contained no answer'
+      ? message.result.trim() || 'success result was marked as an error or contained no answer'
       : message.errors.join('; ') || message.subtype
     throw new Error(`subagent-claude-code: Claude Code failed: ${detail}`)
   }
@@ -408,7 +411,7 @@ export async function startClaudeCodeRun(
     onError: spec.onError,
     signal: request.signal,
     onAbort,
-  }).finally(() => channel.end())
+  }).finally(() => { channel.end() })
 
   return subprocessRunHandle({
     id: SessionId(randomUUID()),
