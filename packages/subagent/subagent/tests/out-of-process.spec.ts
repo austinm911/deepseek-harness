@@ -140,6 +140,7 @@ describe('settleRunResult', () => {
       onAbort,
     })
     expect(result.stopReason).toBe('error')
+    expect(result.failure).toBe('transport died')
     expect(seen).toEqual(['error:transport died'])
   })
 

@@ -163,12 +163,13 @@ export async function settleRunResult(parts: RunResultSettlement): Promise<Subag
     // Cover a rejection already queued when cancellation arrives.
     if (parts.cancelled()) return { output: parts.collectOutput(), stopReason: 'aborted' }
     // Flatten post-publication transport failures while preserving diagnostics.
+    const failed = toError(error)
     try {
-      parts.onError?.(toError(error), 'error')
+      parts.onError?.(failed, 'error')
     } catch {
       // The diagnostic sink cannot reject the run result.
     }
-    return { output: parts.collectOutput(), stopReason: 'error' }
+    return { output: parts.collectOutput(), stopReason: 'error', failure: failed.message }
   } finally {
     parts.signal.removeEventListener('abort', parts.onAbort)
   }

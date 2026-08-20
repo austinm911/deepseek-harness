@@ -266,6 +266,14 @@ export interface SubagentResult {
   readonly structured?: unknown
   /** Why the run ended. A non-`completed` reason means `output` may be partial. */
   readonly stopReason: SubagentStopReason
+  /**
+   * Why the run failed, in the child's own words, when `stopReason` is
+   * `'error'`. The seam flattens post-publication faults to a stop reason;
+   * without this text a consumer can only report that a stop reason was not
+   * `completed`, and the child's actual diagnostic (an expired login, a
+   * refused model) would be lost.
+   */
+  readonly failure?: string
 }
 
 /** One incremental text update from a running engine, surfaced for streaming. */

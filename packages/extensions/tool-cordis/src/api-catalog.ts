@@ -4137,7 +4137,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SubagentResult',
-    declaration: 'export interface SubagentResult {\n    readonly output: ContentBlock[];\n    readonly continuationId?: string;\n    readonly structured?: unknown;\n    readonly stopReason: SubagentStopReason;\n}',
+    declaration: 'export interface SubagentResult {\n    readonly output: ContentBlock[];\n    readonly continuationId?: string;\n    readonly structured?: unknown;\n    readonly stopReason: SubagentStopReason;\n    readonly failure?: string;\n}',
   },
   {
     name: 'SubagentRun',
