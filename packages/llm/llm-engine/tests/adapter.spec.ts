@@ -45,6 +45,7 @@ class FakeProvider implements SubagentProvider {
     const result = Promise.resolve({
       stopReason: fixture.stopReason,
       output: fixture.output,
+      ...fixture.failure === undefined ? {} : { failure: fixture.failure },
       ...this.continuationId === undefined ? {} : { continuationId: this.continuationId },
     })
     return {
@@ -61,13 +62,14 @@ class FakeProvider implements SubagentProvider {
       dispose: async () => {
         this.disposed = true
       },
+    }
   }
-}
 }
 
 interface SubagentResultFixture {
   stopReason: 'completed' | 'error' | 'aborted' | 'max-tokens' | 'refusal'
   output: ContentBlock[]
+  failure?: string
 }
 
 const PONG: ContentBlock[] = [{ type: 'text', text: 'PONG' }]
@@ -157,9 +159,12 @@ describe('engine LLM adapter', () => {
       expect(providers.some(info => info.id === engine)).toBe(true)
       const models = await ctx.llm.listModels(engine)
       const ids = models.map(model => model.id)
-      // The real catalog, plus the native (CLI default) choice.
+      // The `claude-code` catalog is pinned. The `codex` catalog comes from
+      // the installed app-server, and this suite composes no subprocess seam,
+      // so that route degrades to its native default alone.
       expect(ids).toContain('native')
-      expect(ids.length).toBeGreaterThan(1)
+      if (engine === 'claude-code') expect(ids.length).toBeGreaterThan(1)
+      else expect(ids).toEqual(['native'])
       const policy = ctx.llm.providerRetryPolicy(engine)
       expect(policy.mode).toBe('normal')
       if (policy.mode === 'normal') expect(policy.maxRetries).toBe(0)
@@ -195,6 +200,21 @@ describe('engine LLM adapter', () => {
         { type: 'block-start', index: 0, blockType: 'text' },
         { type: 'finish', reason: { kind: 'error', failure: failureWith('ENGINE_FAILURE') } },
       ])
+      await ctx.fiber.dispose()
+    })
+
+    it(`carries the failed ${engine} child's reported cause into the failure message`, async () => {
+      const fake = new FakeProvider(engine)
+      fake.result = {
+        stopReason: 'error',
+        output: [{ type: 'text', text: 'partial' }],
+        failure: 'Claude Code failed: Not logged in',
+      }
+      const { ctx, collect } = await setup(fake)
+      const finish = (await collect()).at(-1)
+      expect(finish).toMatchObject({
+        reason: { failure: { code: 'ENGINE_FAILURE', message: expect.stringContaining('Not logged in') as string } },
+      })
       await ctx.fiber.dispose()
     })
 
@@ -274,12 +294,12 @@ describe('engine LLM adapter', () => {
 })
 
 describe('engine LLM adapter model and effort selection', () => {
-  it('advertises the real model catalog with reasoning efforts per engine', async () => {
+  it('advertises every route model with capacity and reasoning efforts', async () => {
     for (const engine of ['claude-code', 'codex'] as const) {
       const fake = new FakeProvider(engine)
       const { ctx } = await setup(fake)
       const models = await ctx.llm.listModels(engine)
-      expect(models.length).toBeGreaterThan(1)
+      expect(models.length).toBeGreaterThan(0)
       const resolved = await ctx.llm.resolveModelInfo(engine, models[0]!.id)
       expect(resolved.reasoning?.efforts.length).toBeGreaterThan(1)
       expect(resolved.context).toBeDefined()

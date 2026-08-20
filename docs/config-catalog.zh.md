@@ -900,7 +900,7 @@ export interface DeepSeekCatalogModel {
 需要：`llm` · `subagents`
 
 ```ts config-catalog
-/** Plugin config: the long-lived session switch for both engine routes. */
+/** Plugin config: the session switch and the `codex` route's discovery inputs. */
 export interface Config {
   /**
    * Whether turns resume the engine's long-lived session (Claude `resume`,
@@ -909,10 +909,28 @@ export interface Config {
    * then persists under the native CLI config dirs.
    */
   continuation?: boolean
+  /**
+   * Whether the `codex` route asks the installed `codex app-server` which
+   * models it serves, on the first read of the route's catalog. With
+   * discovery off — an offline host, or a composition that must advertise the
+   * same route on every machine — the route advertises only `native`.
+   */
+  codexModelDiscovery?: boolean
+  /**
+   * Deadline in milliseconds for that query, covering the app-server
+   * handshake and the `model/list` reply together.
+   */
+  codexDiscoveryTimeoutMs?: number
+  /**
+   * Context-window tokens the harness assumes for every model the `codex`
+   * route advertises, `native` included. The app-server reports no capacity,
+   * and this figure feeds compaction.
+   */
+  codexContextWindow?: number
 }
 ```
 
-来源：[`packages/llm/llm-engine/src/index.ts:27`](../packages/llm/llm-engine/src/index.ts)
+来源：[`packages/llm/llm-engine/src/index.ts:39`](../packages/llm/llm-engine/src/index.ts)
 
 <a id="deepseek-aidsh-llm-pi-ai"></a>
 
@@ -2149,7 +2167,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/subagent/subagent-codex/src/index.ts:30`](../packages/subagent/subagent-codex/src/index.ts)
+来源：[`packages/subagent/subagent-codex/src/index.ts:33`](../packages/subagent/subagent-codex/src/index.ts)
 
 <a id="deepseek-aidsh-subagent-dsh-sdk"></a>
 

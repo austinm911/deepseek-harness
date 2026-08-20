@@ -16,11 +16,15 @@ Refusal surfaces (all error finishes, no engine process started):
 - **Auxiliary purposes** — `UNSUPPORTED_PURPOSE`: compaction and session-title calls would spawn a full agent run for a side task.
 - **Non-completed results** — `ENGINE_FAILURE` (or `ABORTED` for explicit cancellation), `EMPTY_RESPONSE` for a completed run with no text.
 
-Each route advertises its **real model catalog** (`claude-code`: Claude Opus/Sonnet/Haiku family; `codex`: the installed app-server's GPT-5.3 Codex models) plus a `native` choice meaning "the CLI's own configured default — no override sent". Selecting a catalog model sends the id to the engine (SDK `model` / app-server `turn/start model`). Every catalog model advertises selectable **reasoning efforts** (`off`/`low`/`medium`/`high`, plus `xhigh`/`max` for Claude), mapped to the engines' native vocabularies (SDK `effort`/`thinking`, app-server `effort`); the harness materializes `high` when the caller omits one.
+The `claude-code` route advertises a pinned catalog — the Claude Opus/Sonnet/Haiku families, because the installed Agent SDK exposes no enumeration call. The `codex` route asks the installed `codex app-server` which models it serves (`model/list`) on the first read of its catalog, once for the plugin's life, and advertises those; entries the app-server marks hidden are withheld. Both routes also offer a `native` choice meaning "the CLI's own configured default — no override sent". Selecting a catalog model sends the id to the engine (SDK `model` / app-server `turn/start model`).
+
+Every `claude-code` model advertises the efforts `off`/`low`/`medium`/`high`/`xhigh`/`max`, and the harness materializes `high` when the caller omits one. Every discovered `codex` model advertises exactly the efforts it reported, so `xhigh`, `max`, and `ultra` appear on the models that accept them, with that model's own reported default; an effort the selected model does not report is refused before any CLI starts. Codex `native` advertises the whole app-server vocabulary (harness `off` is the wire's `minimal`) and no harness default, so an omitted effort leaves the CLI's own setting alone.
+
+`model/list` reports no capacity, so every model on the `codex` route takes `codexContextWindow` and sends no output cap. When the query cannot answer — no `codex` on `PATH`, a CLI that is not logged in, the `codexDiscoveryTimeoutMs` deadline passing, or a reply the app-server protocol adapter does not accept — the route advertises `native` alone and names the cause through `ctx.logger.warn`. No model id is invented and no pinned list stands in, so the picker never offers an id the installed CLI has dropped.
 
 ## Composition
 
-The `@deepseek-ai/dsh-multi-provider` bundle mounts this adapter together with the two backends; the runnable reference is [`examples/multi-provider`](../../../examples/multi-provider/README.md). A profile needs `dsh-subagent` (in `dsh-base`) plus the two backend rows and this row:
+The `@deepseek-ai/dsh-multi-provider` bundle mounts this adapter together with the two backends; the runnable reference is [`examples/multi-provider`](../../../examples/multi-provider/README.md). A profile needs `dsh-subagent` (in `dsh-base`) plus the two backend rows and this row. Codex model discovery also needs [`dsh-subprocess`](../../subprocess/subprocess/README.md) (in `dsh-base`); without it the `codex` route advertises `native` alone.
 
 ```yaml
 - id: llm-engine
@@ -34,6 +38,13 @@ The `@deepseek-ai/dsh-multi-provider` bundle mounts this adapter together with t
 ```
 
 No keys: `claude` must be logged into claude.ai and/or `codex` into ChatGPT.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `continuation` | `false` | Whether turns resume the engine's long-lived session instead of starting fresh. Requires `continuation: true` on the matching backend rows. |
+| `codexModelDiscovery` | `true` | Whether the `codex` route queries the installed app-server for its models. With it off — an offline host, or a composition that must advertise the same route on every machine — the route advertises `native` alone and starts no child process. |
+| `codexDiscoveryTimeoutMs` | `10000` | Positive finite deadline in milliseconds, no greater than [`MAX_TIMER_DELAY_MS`](../../util/timeout/README.md), covering the app-server handshake and the `model/list` reply together. |
+| `codexContextWindow` | `272000` | Context-window tokens assumed for every model the `codex` route advertises. The app-server reports no capacity, and its own catalog carries this figure; the value feeds compaction. |
 
 ## Permission decisions
 
@@ -62,4 +73,6 @@ None; each run is a fresh engine process with its own provider state.
 - **Continuation is opt-in and native-stateful** — `continuation: true` persists Claude session files and Codex threads under the native CLI config dirs; the one-shot default touches no native state.
 - **Host cwd** — engine runs happen in the host process's cwd, not the session's workspace.
 - **Auxiliary calls refused** — compaction and session-title generation fail for engine sessions; titles fall back to the fallback rules.
-- **Catalog is static** — model lists are curated from the installed SDK/catalog versions; a newer CLI may support models the list does not yet name (the `native` choice always tracks the CLI's own default).
+- **The `claude-code` catalog is pinned** — the Claude Agent SDK exposes no enumeration call, so a newer CLI may serve models the list does not yet name (the `native` choice always tracks the CLI's own default).
+- **Codex capacity is configured, not reported** — `model/list` carries no context window, so one `codexContextWindow` covers every model on the route; a model whose real capacity differs is compacted against the configured figure.
+- **Codex discovery reads one page and caches for the plugin's life** — the app-server answers its complete catalog with a null cursor, and a CLI upgraded while the harness runs is not re-read until the plugin reloads.

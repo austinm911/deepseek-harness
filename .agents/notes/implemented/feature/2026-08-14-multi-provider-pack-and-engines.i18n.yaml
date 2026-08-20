@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-14-multi-provider-pack-and-engines.md
-2026-08-14-multi-provider-pack-and-engines.md: a5a00e98ee7b31ca9f89734a2753ce86cacdf77d
-2026-08-14-multi-provider-pack-and-engines.zh.md: 58199e531ccf33f5100e69bdab3c0b7e19576979
+2026-08-14-multi-provider-pack-and-engines.md: acca29dcd5803602fa228728af4af6c031fd5a59
+2026-08-14-multi-provider-pack-and-engines.zh.md: de4f50a29bd8e86e15c260642a62e63cfb69d40f

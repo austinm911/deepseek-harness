@@ -23,6 +23,9 @@ import {
   type CodexRunSpec,
 } from './run.ts'
 
+export { listCodexModels, type CodexModelListSpec } from './models.ts'
+export type { CodexModel } from './wire.ts'
+
 export const name = 'subagent-codex'
 export const inject = ['subagents', 'subprocess']
 

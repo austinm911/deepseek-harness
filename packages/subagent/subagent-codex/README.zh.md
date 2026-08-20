@@ -18,6 +18,12 @@
 
 本提供方不声明任何可选的启动时能力，并报告 `inheritsParentContext: false`。Codex 会接收独立文本任务和父会话 cwd，但不会接收父会话的对话、角色设定、工具筛选器、深度策略或结构化输出约定。临时 Codex 线程 ID 与轮次 ID 仅在此次运行内部可见，绝不会持久化到父会话。
 
+## 模型发现
+
+`listCodexModels(spec)` 是与提供方并列的包导出，不属于 subagent 约定。它通过 [`dsh-subprocess`](../../subprocess/subprocess/README.md) 启动一个 app-server 子进程，完成 `initialize` 握手，发送 `model/list`，然后释放该子进程；子进程的标准输入在释放前始终保持打开，因为 app-server 读到 EOF 就会退出而不回应未完成的请求。返回的每个模型携带其 app-server id、显示名、可接受的 Harness 推理努力级别 id 以及该模型自己的默认级别；被 app-server 标记为 `hidden` 的条目不予返回，而一次请求即覆盖整个目录，因为服务器应答的游标为空。CLI 缺失、请求被拒绝、提前退出、应答不被本协议适配器接受，或超出 `timeoutMs` 期限，都会导致拒绝——[`dsh-llm-engine`](../../llm/llm-engine/README.md) 是消费方，由它决定那时公布什么。
+
+推理努力级别的双向映射也在这里：app-server 的 `minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra` 与 Harness 的 `off`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra` 一一对应。一次运行的 `reasoningEffort` 和被发现模型报告的级别都走这一张表，表外的级别会显式失败。
+
 ## 配置
 
 | 配置键 | 默认值 | 含义 |
@@ -56,7 +62,7 @@
 
 ## 产品兼容性与证据
 
-生产环境的协议层有意只实现这一单次执行约定所需的 app-server 方法。开发证据锁定在 `@openai/codex@0.147.0` / `codex-cli 0.147.0`；该 NPM 包仅作为测试依赖，部署环境仍需通过 `PATH` 提供 `codex`。
+生产环境的协议层有意只实现这一单次执行约定所需的 app-server 方法，外加 `model/list`。开发证据锁定在 `@openai/codex@0.147.0` / `codex-cli 0.147.0`，而已记录的 `model/list` 应答来自 `codex-cli 0.148.0`；该 NPM 包仅作为测试依赖，部署环境仍需通过 `PATH` 提供 `codex`。
 
 ## 模型体验
 

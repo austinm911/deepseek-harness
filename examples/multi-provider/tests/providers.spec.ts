@@ -66,17 +66,18 @@ describe('multi-provider leaf over the real Loader (no key required)', () => {
       name: 'Claude (Pro/Max subscription)',
       models: ['claude-haiku-4-5', 'claude-opus-5', 'claude-sonnet-4-5'],
     })
-    // The engine LLM adapter registers the local CLI routes with their real
-    // model catalogs (native = the CLI's own default); the delegation
-    // backends serve them with OAuth.
+    // The engine LLM adapter registers the local CLI routes; the delegation
+    // backends serve them with OAuth. The `claude-code` catalog is pinned to
+    // the installed Agent SDK's families. The `codex` catalog comes from the
+    // installed app-server's `model/list`, so only the CLI-default choice is
+    // assertable here: which models a host serves depends on its CLI version
+    // and login, and a host with no `codex` at all degrades to this alone.
     expect(output.providers[0]!.name).toBe('Claude Code')
     expect(output.providers[0]!.models).toEqual(expect.arrayContaining([
       'native', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5',
     ]))
     expect(output.providers[1]!.name).toBe('Codex')
-    expect(output.providers[1]!.models).toEqual(expect.arrayContaining([
-      'native', 'gpt-5.3-codex', 'gpt-5.3-codex-spark',
-    ]))
+    expect(output.providers[1]!.models).toContain('native')
 
     // The delegation backends load without starting either product.
     expect(output.subagents).toEqual(expect.arrayContaining(['codex', 'claude-code']))

@@ -18,6 +18,12 @@ Local cancellation wins the result race and maps to `aborted`. A failed turn who
 
 The provider advertises no optional start-time capabilities and reports `inheritsParentContext: false`. Codex receives the standalone text task and the parent Session cwd, but not the parent conversation, persona, tool filter, depth policy, or structured-output contract. The ephemeral Codex thread id and turn id stay private to this run and are never persisted in the parent Session.
 
+## Model discovery
+
+`listCodexModels(spec)` is a package export beside the provider, not part of the subagent contract. It starts one app-server child through [`dsh-subprocess`](../../subprocess/subprocess/README.md), performs the `initialize` handshake, sends `model/list`, and disposes the child; the child's stdin stays open until disposal because the app-server exits on EOF without answering outstanding requests. Each returned model carries its app-server id, display name, accepted Harness effort ids, and its own default effort; entries the app-server marks `hidden` are withheld, and one request covers the catalog because the server answers a null cursor. A missing CLI, a refused request, an early exit, a reply this protocol adapter does not accept, or a missed `timeoutMs` deadline rejects — [`dsh-llm-engine`](../../llm/llm-engine/README.md) is the consumer and owns what to advertise then.
+
+Both directions of the effort mapping live here: the app-server levels `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` pair with the Harness ids `off`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. A run's `reasoningEffort` and a discovered model's reported levels both cross that one table, and a level outside it fails loud.
+
 ## Configuration
 
 | Key | Default | Meaning |
@@ -56,7 +62,7 @@ The standalone composition below shows the complete explicit capability. A Profi
 
 ## Product compatibility and evidence
 
-The production wire intentionally implements only the app-server methods required by this one-shot contract. Development evidence is pinned to `@openai/codex@0.147.0` / `codex-cli 0.147.0`; the npm package is a test-only dependency, and deployments still supply `codex` on `PATH`.
+The production wire intentionally implements only the app-server methods required by this one-shot contract plus `model/list`. Development evidence is pinned to `@openai/codex@0.147.0` / `codex-cli 0.147.0`, and the recorded `model/list` reply comes from `codex-cli 0.148.0`; the npm package is a test-only dependency, and deployments still supply `codex` on `PATH`.
 
 ## Model Experience
 

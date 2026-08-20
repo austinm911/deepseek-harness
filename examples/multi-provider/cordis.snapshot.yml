@@ -116,6 +116,11 @@
   name: '@deepseek-ai/dsh-llm-engine'
   config:
     continuation: true
+    # Replay must produce the same transcript on every machine. Asking the
+    # installed `codex app-server` which models it serves would make the
+    # route's catalog depend on the host's CLI version and login, so the
+    # replay leaf advertises the CLI-default choice alone.
+    codexModelDiscovery: false
 
 # Managed child-process groups for the bash executor (spawn/kill/output plumbing).
 - id: subprocess

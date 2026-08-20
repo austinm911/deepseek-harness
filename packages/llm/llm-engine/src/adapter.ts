@@ -25,17 +25,22 @@ import {
 import type {
   GenerateOptions,
   LlmModelInfo,
+  LlmModelReasoningInfo,
   LlmReasoningEffortInfo,
   LlmResolvedModelInfo,
+  Message,
   ResolvedRetryPolicy,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import type { Message } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { listCodexModels, type CodexModel } from '@deepseek-ai/dsh-subagent-codex'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-// Empty type import: declaration-merges the subagent service into the cordis
-// Context so `ctx.get('subagents')` is typed at this call site.
-import type {} from '@deepseek-ai/dsh-subagent'
+// Typed result plus the declaration merge that puts the subagent service on
+// the cordis Context, so `ctx.get('subagents')` is typed at this call site.
+import type { SubagentResult } from '@deepseek-ai/dsh-subagent'
+// The declaration merge that puts the subprocess service on the cordis
+// Context, so `ctx.get('subprocess')` is typed for codex model discovery.
+import type {} from '@deepseek-ai/dsh-subprocess'
 
 /** The engine routes this adapter serves, matching the backend provider names. */
 export const ENGINE_ROUTES = ['claude-code', 'codex'] as const
@@ -45,51 +50,75 @@ export type EngineRoute = (typeof ENGINE_ROUTES)[number]
 /** Model id meaning "the CLI's own configured default" (no override sent). */
 export const NATIVE_MODEL = 'native'
 
-/**
- * Models each engine route advertises, with the capacity metadata the harness
- * needs (compaction). Claude models from the Claude Code model family; Codex
- * models from the installed 0.147.0 app-server's model set. `native` stays
- * selectable as the CLI default override-free choice.
- */
-export const ENGINE_MODEL_CATALOG: Record<EngineRoute, readonly {
-  id: string
-  name: string
-  contextWindow: number
-  maxTokens: number
-}[]> = {
-  'claude-code': [
-    { id: 'claude-opus-5', name: 'Claude Opus 5', contextWindow: 1_000_000, maxTokens: 128_000 },
-    { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', contextWindow: 1_000_000, maxTokens: 128_000 },
-    { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', contextWindow: 1_000_000, maxTokens: 128_000 },
-    { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', contextWindow: 1_000_000, maxTokens: 128_000 },
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', contextWindow: 1_000_000, maxTokens: 128_000 },
-    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', contextWindow: 1_000_000, maxTokens: 64_000 },
-    { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', contextWindow: 200_000, maxTokens: 64_000 },
-    { id: NATIVE_MODEL, name: 'Native default', contextWindow: 1_000_000, maxTokens: 128_000 },
-  ],
-  codex: [
-    { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', contextWindow: 400_000, maxTokens: 128_000 },
-    { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', contextWindow: 128_000, maxTokens: 32_000 },
-    { id: NATIVE_MODEL, name: 'Native default', contextWindow: 400_000, maxTokens: 128_000 },
-  ],
+/** One model an engine route advertises, with the metadata the harness needs. */
+interface RouteModel {
+  readonly id: string
+  readonly name: string
+  /** Capacity the compaction seam reads. */
+  readonly contextWindow: number
+  /** Per-request output cap, absent on a route whose engine reports none. */
+  readonly maxTokens?: number
+  /** Selectable efforts for this exact model. */
+  readonly reasoning: LlmModelReasoningInfo
 }
 
-/** Selectable harness effort ids per engine route, in display order. */
-export const ENGINE_EFFORTS: Record<EngineRoute, readonly { id: string; name: string }[]> = {
-  'claude-code': [
-    { id: 'off', name: 'Off (no extended thinking)' },
-    { id: 'low', name: 'Low' },
-    { id: 'medium', name: 'Medium' },
-    { id: 'high', name: 'High' },
-    { id: 'xhigh', name: 'XHigh' },
-    { id: 'max', name: 'Max' },
+/**
+ * Selectable efforts for every `claude-code` model, in display order. The
+ * Claude Agent SDK exposes no enumeration call, so this list and the model
+ * rows below are pinned to the installed SDK's families.
+ */
+const CLAUDE_CODE_REASONING: LlmModelReasoningInfo = {
+  efforts: [
+    { id: ReasoningEffortId('off'), name: 'Off (no extended thinking)' },
+    { id: ReasoningEffortId('low'), name: 'Low' },
+    { id: ReasoningEffortId('medium'), name: 'Medium' },
+    { id: ReasoningEffortId('high'), name: 'High' },
+    { id: ReasoningEffortId('xhigh'), name: 'XHigh' },
+    { id: ReasoningEffortId('max'), name: 'Max' },
   ],
-  codex: [
-    { id: 'off', name: 'Off (minimal)' },
-    { id: 'low', name: 'Low' },
-    { id: 'medium', name: 'Medium' },
-    { id: 'high', name: 'High' },
-  ],
+  defaultEffort: ReasoningEffortId('high'),
+}
+
+/** The models the `claude-code` route advertises, `native` last. */
+const CLAUDE_CODE_MODELS: readonly RouteModel[] = [
+  { id: 'claude-opus-5', name: 'Claude Opus 5', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', contextWindow: 1_000_000, maxTokens: 128_000 },
+  { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', contextWindow: 1_000_000, maxTokens: 64_000 },
+  { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', contextWindow: 200_000, maxTokens: 64_000 },
+  { id: NATIVE_MODEL, name: 'Native default', contextWindow: 1_000_000, maxTokens: 128_000 },
+].map(entry => ({ ...entry, reasoning: CLAUDE_CODE_REASONING }))
+
+/**
+ * Every effort the app-server vocabulary carries, in display order. A
+ * discovered model advertises the members it reports; `native` advertises all
+ * of them, because the CLI's configured default model is not named here.
+ */
+const CODEX_EFFORTS: readonly LlmReasoningEffortInfo[] = [
+  { id: ReasoningEffortId('off'), name: 'Off (minimal)' },
+  { id: ReasoningEffortId('low'), name: 'Low' },
+  { id: ReasoningEffortId('medium'), name: 'Medium' },
+  { id: ReasoningEffortId('high'), name: 'High' },
+  { id: ReasoningEffortId('xhigh'), name: 'XHigh' },
+  { id: ReasoningEffortId('max'), name: 'Max' },
+  { id: ReasoningEffortId('ultra'), name: 'Ultra' },
+]
+
+/**
+ * Resolved engine-adapter options; the plugin's `Config` documents and
+ * defaults every field.
+ */
+export interface EngineAdapterOptions {
+  /** Whether turns resume the engine's long-lived session. */
+  readonly continuation: boolean
+  /** Whether the `codex` route queries the installed app-server for its models. */
+  readonly codexModelDiscovery: boolean
+  /** Deadline in milliseconds for that query. */
+  readonly codexDiscoveryTimeoutMs: number
+  /** Context-window tokens applied to every model the `codex` route advertises. */
+  readonly codexContextWindow: number
 }
 
 /** Stable failure code for an engine turn that ended without a usable answer. */
@@ -104,6 +133,41 @@ const ENGINE_NAMES: Record<EngineRoute, string> = {
 }
 
 /**
+ * The `codex` route's override-free choice. It carries no `defaultEffort`, so
+ * a caller that selects no effort keeps whatever the CLI is configured for.
+ * @param contextWindow - resolved capacity for the route's models.
+ * @returns the `native` route model.
+ */
+function codexNativeModel(contextWindow: number): RouteModel {
+  return {
+    id: NATIVE_MODEL,
+    name: 'Native default',
+    contextWindow,
+    reasoning: { efforts: CODEX_EFFORTS },
+  }
+}
+
+/**
+ * Project one discovered app-server model onto the route. `model/list` reports
+ * no capacity, so every model takes the configured context window and no
+ * output cap (the adapter sends none to the CLI).
+ * @param model - one model the app-server advertises.
+ * @param contextWindow - resolved capacity for the route's models.
+ * @returns the advertised route model.
+ */
+function codexRouteModel(model: CodexModel, contextWindow: number): RouteModel {
+  return {
+    id: model.id,
+    name: model.displayName,
+    contextWindow,
+    reasoning: {
+      efforts: CODEX_EFFORTS.filter(effort => model.efforts.includes(effort.id)),
+      defaultEffort: ReasoningEffortId(model.defaultEffort),
+    },
+  }
+}
+
+/**
  * Resolve the actual initiating Agent so subagent lifecycle events retain the
  * parent scope and native engines inherit its session workspace.
  * @param ctx - context carrying the agent registry.
@@ -115,6 +179,23 @@ function parentAgent(ctx: Context): Agent {
   return agents.requireInitiator()
 }
 
+/** Longest child text carried into a failure message. */
+const DETAIL_LIMIT = 500
+
+/**
+ * The child's own account of a failed run, appended to the failure message.
+ * The backends report the cause as `failure` (an expired login, a refused
+ * model); a provider that only produced text falls back to that text.
+ * Oversized detail is cut to keep the message loggable.
+ * @param result - the terminal result of the failed run.
+ * @returns `": <text>"`, or `''` when the child said nothing.
+ */
+function failureDetail(result: SubagentResult): string {
+  const text = (result.failure ?? textOfBlocks(result.output)).trim()
+  if (text === '') return ''
+  return `: ${text.length > DETAIL_LIMIT ? `${text.slice(0, DETAIL_LIMIT)}…` : text}`
+}
+
 /**
  * The engine-backed LLM adapter. Registers the `claude-code` and `codex`
  * routes on `ctx.llm`; each `stream()` call runs the local CLI through
@@ -122,20 +203,21 @@ function parentAgent(ctx: Context): Agent {
  */
 export class EngineLlmAdapter extends LlmAdapter {
   private readonly ctx: Context
-  private readonly continuation: boolean
+  private readonly options: EngineAdapterOptions
   /** Per harness session and provider route: the native session id to resume. */
   private readonly sessionsById = new Map<string, Map<string, string>>()
+  /** The `codex` route's catalog, queried at most once for the plugin's life. */
+  private codexModels: Promise<readonly RouteModel[]> | undefined
 
   /**
-   * @param ctx - context carrying the subagent service at call time.
-   * @param continuation - whether turns resume the engine's long-lived
-   *   session (requires the backends' `continuation` option too).
+   * @param ctx - context carrying the subagent and subprocess services at call time.
+   * @param options - resolved plugin options.
    */
-  constructor(ctx: Context, continuation: boolean) {
+  constructor(ctx: Context, options: EngineAdapterOptions) {
     super()
     this.ctx = ctx
-    this.continuation = continuation
-    ctx.on('session/disposed', session => {
+    this.options = options
+    ctx.on('session/disposed', (session) => {
       this.sessionsById.delete(session.header.id)
     })
   }
@@ -157,44 +239,86 @@ export class EngineLlmAdapter extends LlmAdapter {
     return this.sessionsById.get(sessionId)?.get(provider)
   }
 
+  /**
+   * Ask the installed app-server what it serves. Any failure — no CLI on the
+   * host, a CLI that is not logged in, a missed deadline, a reply this
+   * protocol adapter does not accept — leaves the route advertising `native`
+   * alone, with the cause on `ctx.logger`. No model id is ever invented, and
+   * no pinned list stands in: a stale pinned list offers ids the installed CLI
+   * has dropped.
+   * @returns the discovered models followed by `native`, or `native` alone.
+   */
+  private async discoverCodexModels(): Promise<readonly RouteModel[]> {
+    const native = codexNativeModel(this.options.codexContextWindow)
+    if (!this.options.codexModelDiscovery) return [native]
+    const subprocess = this.ctx.get('subprocess')
+    if (subprocess === undefined) {
+      this.ctx.logger.warn(
+        'llm-engine: the codex route advertises only its native default — the subprocess service is not composed',
+      )
+      return [native]
+    }
+    try {
+      const discovered = await listCodexModels({
+        cwd: process.cwd(),
+        timeoutMs: this.options.codexDiscoveryTimeoutMs,
+        spawn: spec => subprocess.spawn(spec),
+      })
+      return [
+        ...discovered.map(model => codexRouteModel(model, this.options.codexContextWindow)),
+        native,
+      ]
+    } catch (error: unknown) {
+      /* v8 ignore next -- listCodexModels rejects with Error. */
+      const cause = error instanceof Error ? error.message : String(error)
+      this.ctx.logger.warn(
+        'llm-engine: the codex route advertises only its native default — '
+        + `codex app-server model/list failed: ${cause}`,
+      )
+      return [native]
+    }
+  }
+
+  /**
+   * The models one route advertises. `claude-code` is pinned; `codex` resolves
+   * through one cached app-server query, so repeated picker reads and turn
+   * admissions share a single child process for the plugin's life.
+   * @param provider - the engine provider route.
+   * @returns that route's advertised models.
+   */
+  private routeModels(provider: string): Promise<readonly RouteModel[]> {
+    if (provider !== 'codex') return Promise.resolve(CLAUDE_CODE_MODELS)
+    this.codexModels ??= this.discoverCodexModels()
+    return this.codexModels
+  }
+
   /** @inheritdoc */
   override providerInfo(provider: string): { id: string; name: string } {
     return { id: provider, name: ENGINE_NAMES[provider as EngineRoute] }
   }
 
   /** @inheritdoc */
-  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    const catalog = ENGINE_MODEL_CATALOG[provider as EngineRoute]
-    return Promise.resolve(catalog.map(entry => ({
-      provider,
-      id: entry.id,
-      name: entry.name,
-    })))
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const models = await this.routeModels(provider)
+    return models.map(entry => ({ provider, id: entry.id, name: entry.name }))
   }
 
   /** @inheritdoc */
-  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const entry = ENGINE_MODEL_CATALOG[provider as EngineRoute]
-      .find(candidate => candidate.id === model)
+  override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    const entry = (await this.routeModels(provider)).find(candidate => candidate.id === model)
     if (entry === undefined) {
-      return Promise.reject(new Error(
+      throw new Error(
         `engine provider ${JSON.stringify(provider)} does not serve model ${JSON.stringify(model)}`,
-      ))
+      )
     }
-    return Promise.resolve({
+    return {
       provider,
       id: entry.id,
       name: entry.name,
       context: { contextWindow: entry.contextWindow },
-      defaultMaxTokens: entry.maxTokens,
-      reasoning: {
-        efforts: ENGINE_EFFORTS[provider as EngineRoute].map(effort => ({
-          id: ReasoningEffortId(effort.id),
-          name: effort.name,
-        }) satisfies LlmReasoningEffortInfo),
-        defaultEffort: ReasoningEffortId('high'),
-      },
-    })
+      ...entry.maxTokens === undefined ? {} : { defaultMaxTokens: entry.maxTokens },
+      reasoning: entry.reasoning,
+    }
   }
 
   /**
@@ -252,7 +376,7 @@ export class EngineLlmAdapter extends LlmAdapter {
       }
       return
     }
-    const sessionKey = this.continuation && options.sessionId !== undefined
+    const sessionKey = this.options.continuation && options.sessionId !== undefined
       ? options.sessionId
       : undefined
     const continueFrom = sessionKey === undefined ? undefined : this.continuationFor(options.provider, sessionKey)
@@ -271,7 +395,7 @@ export class EngineLlmAdapter extends LlmAdapter {
     // fails, or if the downstream consumer stops this generator.
     yield { type: 'block-start', index: 0, blockType: 'text' }
     let sawDelta = false
-    let result: Awaited<typeof run.result> | undefined
+    let result: Awaited<typeof run.result>
     try {
       if (run.updates !== undefined) {
         for await (const update of run.updates) {
@@ -288,7 +412,6 @@ export class EngineLlmAdapter extends LlmAdapter {
     } finally {
       await run.dispose()
     }
-    if (result === undefined) throw new Error('engine run settled without a result')
     if (result.stopReason === 'aborted') {
       yield {
         type: 'finish',
@@ -300,13 +423,16 @@ export class EngineLlmAdapter extends LlmAdapter {
       return
     }
     if (result.stopReason !== 'completed') {
+      // The backend reports why the child failed; without it the caller sees a
+      // bare stop reason and cannot act on an expired login or refused model.
+      const detail = failureDetail(result)
       yield {
         type: 'finish',
         reason: {
           kind: 'error',
           failure: {
             code: ENGINE_FAILURE_CODE,
-            message: `engine ${JSON.stringify(options.provider)} finished with stopReason ${result.stopReason}`,
+            message: `engine ${JSON.stringify(options.provider)} finished with stopReason ${result.stopReason}${detail}`,
           },
         },
       }

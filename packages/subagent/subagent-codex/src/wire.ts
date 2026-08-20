@@ -10,23 +10,44 @@
 import type { Readable, Writable } from 'node:stream'
 
 /**
+ * The app-server reasoning-effort vocabulary paired with the Harness effort id
+ * for each level, in ascending order. The two vocabularies differ in one
+ * name: the lowest level is `minimal` on the wire and `off` in the Harness.
+ */
+const EFFORT_VOCABULARY: readonly (readonly [harness: string, codex: string])[] = [
+  ['off', 'minimal'],
+  ['low', 'low'],
+  ['medium', 'medium'],
+  ['high', 'high'],
+  ['xhigh', 'xhigh'],
+  ['max', 'max'],
+  ['ultra', 'ultra'],
+]
+
+/**
  * Map a Harness effort id to the Codex app-server effort vocabulary.
  * @param effort - Harness reasoning effort identifier.
  * @returns Codex app-server effort value.
  */
 export function codexEffort(effort: string): string {
-  switch (effort) {
-    case 'off':
-      return 'minimal'
-    case 'low':
-      return 'low'
-    case 'medium':
-      return 'medium'
-    case 'high':
-      return 'high'
-    default:
-      throw new Error(`subagent-codex: unsupported reasoning effort ${JSON.stringify(effort)}`)
+  const level = EFFORT_VOCABULARY.find(([harness]) => harness === effort)
+  if (level === undefined) {
+    throw new Error(`subagent-codex: unsupported reasoning effort ${JSON.stringify(effort)}`)
   }
+  return level[1]
+}
+
+/**
+ * Map an app-server effort value back to its Harness effort id.
+ * @param effort - Codex app-server effort value.
+ * @returns Harness reasoning effort identifier.
+ */
+export function harnessEffort(effort: string): string {
+  const level = EFFORT_VOCABULARY.find(([, codex]) => codex === effort)
+  if (level === undefined) {
+    throw new Error(`subagent-codex: app-server reported unsupported reasoning effort ${JSON.stringify(effort)}`)
+  }
+  return level[0]
 }
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SubagentResult, SubagentUpdate } from '@deepseek-ai/dsh-subagent'
@@ -94,8 +115,21 @@ async function raceAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T
   }
 }
 
+/** One model the connected app-server advertises. */
+export interface CodexModel {
+  /** App-server model id, accepted as `turn/start` `model`. */
+  readonly id: string
+  /** Human-readable name for model selectors. */
+  readonly displayName: string
+  /** Harness effort ids this model accepts, in the app-server's own order. */
+  readonly efforts: readonly string[]
+  /** The model's own default, always a member of {@link CodexModel.efforts}. */
+  readonly defaultEffort: string
+}
+
 /**
- * One app-server connection and its single ephemeral thread/turn.
+ * One app-server connection: its model catalog query and its single
+ * ephemeral thread/turn.
  *
  * The class deliberately exposes no generic request surface. Supporting
  * another product method must first become part of the provider contract.
@@ -167,6 +201,47 @@ export class CodexAppServerWire {
     }, signal), signal), 'initialize response')
     this.transport.notify('initialized')
     await this.guarded(this.transport.flush(), signal)
+  }
+
+  /**
+   * The models the connected app-server advertises, hidden entries excluded.
+   * One request covers the catalog: the server answers a `nextCursor` of
+   * `null` for its complete model set.
+   * @param signal - discovery cancellation.
+   * @returns the advertised models, in the app-server's own order.
+   */
+  async listModels(signal: AbortSignal): Promise<readonly CodexModel[]> {
+    const response = object(
+      await this.guarded(this.transport.request('model/list', {}, signal), signal),
+      'model/list response',
+    )
+    const entries = response.data
+    if (!Array.isArray(entries)) {
+      throw new Error('subagent-codex: app-server returned invalid model/list data')
+    }
+    const models: CodexModel[] = []
+    for (const entry of entries) {
+      const model = object(entry, 'model/list entry')
+      if (model.hidden === true) continue
+      const supported = model.supportedReasoningEfforts
+      if (!Array.isArray(supported)) {
+        throw new Error('subagent-codex: app-server returned invalid model/list reasoning efforts')
+      }
+      const efforts = supported.map(level => harnessEffort(
+        string(object(level, 'model/list reasoning effort').reasoningEffort, 'model/list reasoning effort id'),
+      ))
+      const defaultEffort = harnessEffort(string(model.defaultReasoningEffort, 'model/list default reasoning effort'))
+      if (!efforts.includes(defaultEffort)) {
+        throw new Error('subagent-codex: app-server returned a default reasoning effort the model does not support')
+      }
+      models.push({
+        id: string(model.id, 'model/list entry id'),
+        displayName: string(model.displayName, 'model/list entry display name'),
+        efforts,
+        defaultEffort,
+      })
+    }
+    return models
   }
 
   /**

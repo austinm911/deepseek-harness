@@ -10,6 +10,7 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type {
   SubprocessHandle,
   SubprocessOutcome,
+  SubprocessSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import * as codex from '../src/index.ts'
@@ -22,7 +23,8 @@ import {
   textTask,
   type CodexRunSpec,
 } from '../src/run.ts'
-import { CodexAppServerWire } from '../src/wire.ts'
+import { listCodexModels } from '../src/models.ts'
+import { codexEffort, CodexAppServerWire, harnessEffort } from '../src/wire.ts'
 
 type JsonObject = Record<string, unknown>
 
@@ -918,7 +920,11 @@ describe('run lifecycle and quiescence', () => {
         onError: (error) => { errors.push(error.message) },
       })
       child.settle({ exitCode: 9, signal: null })
-      await expect(run.result).resolves.toEqual({ output: [], stopReason: 'error' })
+      await expect(run.result).resolves.toMatchObject({
+        output: [],
+        stopReason: 'error',
+        failure: expect.stringContaining('code 9') as string,
+      })
       expect(errors.at(-1)).toContain('code 9')
       await run.dispose().catch(() => {})
     }
@@ -929,7 +935,7 @@ describe('run lifecycle and quiescence', () => {
       })
       child.peer.respond(turnStart, { turn: { id: 'turn-1' } })
       child.fromChild.end()
-      await expect(run.result).resolves.toEqual({ output: [], stopReason: 'error' })
+      await expect(run.result).resolves.toMatchObject({ output: [], stopReason: 'error' })
       await run.dispose()
     }
   })
@@ -1120,5 +1126,138 @@ describe('disposeCodexChild', () => {
       const wire = new CodexAppServerWire(child.handle.stdout!, child.handle.stdin!, false)
       await expect(disposeCodexChild(wire, handle)).resolves.toBeUndefined()
     }
+  })
+})
+
+describe('reasoning effort vocabularies', () => {
+  it('maps every level in both directions', () => {
+    const levels: readonly (readonly [string, string])[] = [
+      ['off', 'minimal'],
+      ['low', 'low'],
+      ['medium', 'medium'],
+      ['high', 'high'],
+      ['xhigh', 'xhigh'],
+      ['max', 'max'],
+      ['ultra', 'ultra'],
+    ]
+    for (const [harness, codex] of levels) {
+      expect(codexEffort(harness)).toBe(codex)
+      expect(harnessEffort(codex)).toBe(harness)
+    }
+  })
+
+  it('refuses a level outside either vocabulary', () => {
+    expect(() => codexEffort('minimal')).toThrow('unsupported reasoning effort "minimal"')
+    expect(() => harnessEffort('off')).toThrow('app-server reported unsupported reasoning effort "off"')
+  })
+})
+
+describe('listCodexModels', () => {
+  /** Serve the handshake, then one scripted `model/list` reply. */
+  const serve = async (child: FakeChild, reply: (id: unknown) => unknown): Promise<void> => {
+    const initialize = await child.peer.nextMethod('initialize')
+    child.peer.respond(initialize, { userAgent: 'codex-cli 0.148.0' })
+    await child.peer.nextMethod('initialized')
+    const list = await child.peer.nextMethod('model/list')
+    expect(list.params).toEqual({})
+    child.peer.send({ id: list.id, ...reply(list.id) as JsonObject })
+  }
+
+  it('parses the advertised models, withholds hidden entries, and disposes the child', async () => {
+    const child = fakeChild()
+    const spawn = vi.fn((_spec: SubprocessSpawnSpec) => child.handle)
+    const pending = listCodexModels({ cwd: process.cwd(), timeoutMs: 5_000, spawn })
+    await serve(child, () => ({
+      result: {
+        nextCursor: null,
+        data: [
+          {
+            id: 'gpt-5.6-sol',
+            displayName: 'GPT-5.6-Sol',
+            hidden: false,
+            defaultReasoningEffort: 'low',
+            supportedReasoningEfforts: [{ reasoningEffort: 'minimal' }, { reasoningEffort: 'low' }],
+          },
+          {
+            id: 'gpt-5.4-internal',
+            displayName: 'GPT-5.4-Internal',
+            hidden: true,
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+          },
+        ],
+      },
+    }))
+
+    expect(await pending).toEqual([{
+      id: 'gpt-5.6-sol',
+      displayName: 'GPT-5.6-Sol',
+      efforts: ['off', 'low'],
+      defaultEffort: 'low',
+    }])
+    // The child's stdin stays open until disposal: an app-server that reads
+    // EOF exits without answering.
+    expect(spawn.mock.calls[0]![0].stdio.stdin).toBe('pipe')
+    expect(child.terminate).toHaveBeenCalled()
+  })
+
+  it('rejects a reply whose data is not a list', async () => {
+    const child = fakeChild()
+    const pending = listCodexModels({ cwd: process.cwd(), timeoutMs: 5_000, spawn: () => child.handle })
+    const rejects = expect(pending).rejects.toThrow('invalid model/list data')
+    await serve(child, () => ({ result: { data: 'nope' } }))
+    await rejects
+  })
+
+  it('rejects an entry missing its reasoning efforts', async () => {
+    const child = fakeChild()
+    const pending = listCodexModels({ cwd: process.cwd(), timeoutMs: 5_000, spawn: () => child.handle })
+    const rejects = expect(pending).rejects.toThrow('invalid model/list reasoning efforts')
+    await serve(child, () => ({ result: { data: [{ id: 'gpt-6', displayName: 'GPT-6' }] } }))
+    await rejects
+  })
+
+  it('rejects a default effort the model does not support', async () => {
+    const child = fakeChild()
+    const pending = listCodexModels({ cwd: process.cwd(), timeoutMs: 5_000, spawn: () => child.handle })
+    const rejects = expect(pending).rejects
+      .toThrow('default reasoning effort the model does not support')
+    await serve(child, () => ({
+      result: {
+        data: [{
+          id: 'gpt-6',
+          displayName: 'GPT-6',
+          hidden: false,
+          defaultReasoningEffort: 'max',
+          supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+        }],
+      },
+    }))
+    await rejects
+  })
+
+  it('rejects when the deadline passes with no reply', async () => {
+    const child = fakeChild()
+    const pending = listCodexModels({ cwd: process.cwd(), timeoutMs: 20, spawn: () => child.handle })
+    const initialize = await child.peer.nextMethod('initialize')
+    child.peer.respond(initialize, { userAgent: 'codex-cli 0.148.0' })
+    await expect(pending).rejects.toThrow('model/list did not answer within 20ms')
+  })
+
+  it('rejects when the app-server exits before answering', async () => {
+    const child = fakeChild()
+    const pending = listCodexModels({ cwd: process.cwd(), timeoutMs: 5_000, spawn: () => child.handle })
+    await child.peer.nextMethod('initialize')
+    child.settle({ exitCode: 3, signal: null })
+    await expect(pending).rejects.toThrow('app-server exited before model/list answered (code 3, signal null)')
+  })
+
+  it('rejects a spawn-level failure', async () => {
+    const child = fakeChild({ pid: -1, doneError: new Error('spawn codex ENOENT') })
+    await expect(listCodexModels({
+      cwd: process.cwd(),
+      timeoutMs: 5_000,
+      spawn: () => child.handle,
+    })).rejects.toThrow('spawn codex ENOENT')
   })
 })

@@ -3,7 +3,7 @@ provider: claude-code
   models: claude-haiku-4-5, claude-opus-4-6, claude-opus-4-8, claude-opus-5, claude-sonnet-4-5, claude-sonnet-4-6, claude-sonnet-5, native
 provider: codex
   name: Codex
-  models: gpt-5.3-codex, gpt-5.3-codex-spark, native
+  models: native
 provider: google
   name: Gemini
   models: gemini-2.5-flash, gemini-2.5-pro, gemini-3-pro-preview
