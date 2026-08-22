@@ -15,6 +15,7 @@ import { dirname, relative, resolve } from 'node:path'
 import * as yaml from 'js-yaml'
 import ts from 'typescript'
 import { cordisConfigFiles } from './cordis-config-files.ts'
+import { validatePatchLayerRows } from './verify-cordis-patch-rows.ts'
 
 interface JsExpr {
   __jsExpr: string
@@ -87,7 +88,7 @@ if (import.meta.main) {
   errors.push(...validateAppResolution())
   errors.push(...validateSourcePlaneResolution())
   errors.push(...validatePresetPlaneSeparation())
-  errors.push(...validatePatchLayerRows())
+  errors.push(...validatePatchLayerRows(root))
   errors.push(...validateClientHalvesDeclared())
 
   if (errors.length > 0) {
@@ -171,36 +172,6 @@ function validatePresetPlaneSeparation(): string[] {
   return problems
 }
 
-/**
- * Every row of a bundle patch layer must be addressable by the composer.
- *
- * A patch-layer element either names the row it overrides (`id`) or inserts new
- * rows (`insert`); `applyEntryPatches` warns and SKIPS anything else, so a
- * mis-shaped element drops its whole contribution while the profile still
- * boots. That is invisible at runtime except as a missing capability: the
- * multi-provider pack shipped its `llm-pi-ai` row nested under a `patch:` key
- * and activated no provider route at all.
- * @returns one diagnostic per patch-layer row the composer would skip.
- */
-function validatePatchLayerRows(): string[] {
-  const problems: string[] = []
-  for (const file of globSync('**/cordis.patch.yml', { cwd: root, exclude: ['node_modules/**', 'vendor/**'] }).sort()) {
-    const entries = loadEntries(file)
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index]
-      if (!isRecord(entry)) {
-        problems.push(`${file}[${index}]: patch-layer row must be an object`)
-        continue
-      }
-      if (typeof entry.id === 'string' || isUnknownArray(entry.insert)) continue
-      problems.push(
-        `${file}[${index}]: patch-layer row declares neither "id" nor "insert" `
-        + `(keys: ${Object.keys(entry).join(', ') || 'none'}), so the composer skips it`,
-      )
-    }
-  }
-  return problems
-}
 
 /** Every entry of one config file, or an empty list when it is not an entry array. */
 function loadEntries(file: string): unknown[] {

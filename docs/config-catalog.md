@@ -928,7 +928,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/llm/llm-engine/src/index.ts:39`](../packages/llm/llm-engine/src/index.ts)
+Source: [`packages/llm/llm-engine/src/index.ts:41`](../packages/llm/llm-engine/src/index.ts)
 
 <a id="deepseek-aidsh-llm-pi-ai"></a>
 
@@ -2165,7 +2165,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/subagent/subagent-codex/src/index.ts:33`](../packages/subagent/subagent-codex/src/index.ts)
+Source: [`packages/subagent/subagent-codex/src/index.ts:32`](../packages/subagent/subagent-codex/src/index.ts)
 
 <a id="deepseek-aidsh-subagent-dsh-sdk"></a>
 

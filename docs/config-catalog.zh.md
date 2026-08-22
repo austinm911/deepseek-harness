@@ -930,7 +930,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/llm/llm-engine/src/index.ts:39`](../packages/llm/llm-engine/src/index.ts)
+来源：[`packages/llm/llm-engine/src/index.ts:41`](../packages/llm/llm-engine/src/index.ts)
 
 <a id="deepseek-aidsh-llm-pi-ai"></a>
 
@@ -1583,7 +1583,7 @@ export interface JsonRpcConfig {
 
 依赖：`Readable`（`node:stream`）· `Writable`（`node:stream`）
 
-来源：[`packages/sdk/server/src/index.ts:29`](../packages/sdk/server/src/index.ts)
+来源：[`packages/sdk/server/src/index.ts:25`](../packages/sdk/server/src/index.ts)
 
 <a id="deepseek-aidsh-session-persistence-jsonl"></a>
 
@@ -2167,7 +2167,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/subagent/subagent-codex/src/index.ts:33`](../packages/subagent/subagent-codex/src/index.ts)
+来源：[`packages/subagent/subagent-codex/src/index.ts:32`](../packages/subagent/subagent-codex/src/index.ts)
 
 <a id="deepseek-aidsh-subagent-dsh-sdk"></a>
 
