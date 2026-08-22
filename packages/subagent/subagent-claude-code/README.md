@@ -28,11 +28,8 @@ The provider advertises no optional start-time capabilities and reports `inherit
 |---|---|---|
 | `env` | `{}` | Explicit SDK/CLI environment layered over the shared credential-scrubbed parent environment. |
 | `disposeGraceMs` | `3000` | Positive finite grace in milliseconds, no greater than [`MAX_TIMER_DELAY_MS`](../../util/timeout/README.md), between the shared process-tree owner's termination tiers; disposal then waits for whole-tree exit. |
-| `continuation` | `false` | Whether runs persist their SDK session and resume earlier conversations (`continueFrom`). `persistSession: true` writes session state under the native Claude Code config dir; the one-shot default touches no native state. |
 
 Production resolves `claude` from the subprocess execution world's credential-scrubbed `PATH`, with explicit `env` entries applied, and passes the resulting path to the SDK as `pathToClaudeCodeExecutable`. On Windows, a resolved `.cmd` or `.bat` path is carried as a quoted, per-spawn environment value that `cmd.exe /v:off` expands once, so valid path metacharacters remain data. The pinned SDK's fixed flags then occupy cmd's command tail and contain no cmd metacharacters; they are not ordinary Windows argv. Native settings and authentication remain authoritative. The plugin does not install another CLI, select a model, create a product home, log in, or probe an account. Credential-shaped ambient variables are removed before the explicit `env` overlay is applied, so an API key or token intended for the child must be supplied there. Non-credential endpoint variables such as `ANTHROPIC_BASE_URL`, along with ordinary ambient values such as `PATH` and `HOME`, remain inherited unless overridden.
-
-The child is authenticated one of two ways. On a host logged in through the CLI's own credential store — the OS keychain entry or `~/.claude/.credentials.json` — the SDK reads that store directly and no variable is needed. On a host whose only credential is the subscription OAuth token from `claude setup-token`, the CLI's own `CLAUDE_CODE_OAUTH_TOKEN` variable must be forwarded through `env`: the subprocess seam removes every ambient name matching `/KEY|PASSWORD|SECRET|TOKEN/i`, so an unforwarded token never reaches the child and the CLI reports `Not logged in`. An `ANTHROPIC_API_KEY` billed against the Claude API is forwarded the same way. Build the whole `env` value as one expression whose branches contribute nothing for an unset variable; a per-key `!!js process.env.NAME` instead hands the SDK a present-but-undefined entry.
 
 Production `dsh` does not install or mount this optional provider. A Profile that opts in must install `@deepseek-ai/dsh-subagent-claude-code` and mount it once on the host plane; loading the provider starts no Claude process until a tool call. Full Agent Presets carry a matching product tool row with `disabled: true`; copy a preset and remove that field to expose `subagent_claude_code` only to agents composed from the copy. Its `one-shot` policy keeps omitted or `false` `run_in_background` calls in the foreground, while explicit `true` returns a parent-owned Job id for `job_output` or `job_kill`. The base host and full presets already provide the generic Job registry and controls.
 
@@ -42,11 +39,8 @@ The standalone composition below shows the complete explicit capability. A Profi
 - id: subagent-claude-code
   name: '@deepseek-ai/dsh-subagent-claude-code'
   config:
-    env: !!js |
-      ({
-        ...(process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined ? {} : { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN }),
-        ...(process.env.ANTHROPIC_API_KEY === undefined ? {} : { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }),
-      })
+    env:
+      ANTHROPIC_API_KEY: !!js process.env.ANTHROPIC_API_KEY
 
 - id: jobs
   name: '@deepseek-ai/dsh-jobs-local'
@@ -101,7 +95,7 @@ Append-only: foreground adds one result after the reusable parent prefix, while 
 
 ## Known Limitations and Deferred Work
 
-- **One fresh query and process per run unless `continuation: true`** — with continuation, runs persist and resume the native session (Claude `resume`); the one-shot default is a fresh query with no product-session persistence. Live text deltas stream on `SubagentRun.updates` while the query runs.
+- **One fresh query and process per run** — there is no continuation, resume, pooling, progress stream, or product-session persistence.
 - **Host settings are intentionally authoritative** — project and user settings can change model, tools, and behavior; the provider does not provide a filtered or hermetic production mode.
 - **Product installation and account state remain native** — a missing or incompatible `claude`, configuration error, or authentication failure is surfaced as a startup or run error; the plugin provides no installer or login flow.
 - **The SDK platform CLI remains in the install closure** — production ignores it in favor of the host `claude`, but the current SDK optional dependency is still installed and supplies the keyless compatibility fixture. Removing that payload belongs to the separate product installation-closure follow-up.

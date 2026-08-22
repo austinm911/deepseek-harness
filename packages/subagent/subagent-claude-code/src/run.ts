@@ -20,11 +20,12 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   settleRunResult,
   subprocessRunHandle,
+  updateChannel,
   type SubagentResult,
   type SubagentRun,
   type SubagentStartRequest,
   type SubagentStopReason,
-  type SubagentUpdate,
+  type UpdateChannel,
 } from '@deepseek-ai/dsh-subagent'
 import {
   scrubbedParentEnv,
@@ -35,6 +36,7 @@ import {
   claudeSpawnSpec,
   ManagedClaudeCodeProcess,
 } from './process.ts'
+import { claudeEffortOptions } from './effort.ts'
 
 /** Default POSIX grace between subprocess termination tiers. */
 export const DEFAULT_DISPOSE_GRACE_MS = 3_000
@@ -114,51 +116,6 @@ export function successfulResult(message: SDKResultMessage): string {
   return message.result
 }
 
-/** A push channel whose async iterator drains live updates. */
-export interface UpdateChannel {
-  push(update: SubagentUpdate): void
-  end(): void
-  [Symbol.asyncIterator](): AsyncIterator<SubagentUpdate>
-}
-
-/**
- * Build a live update channel: pushed values buffer until the iterator
- * consumes them; `end()` terminates iteration.
- * @returns the push/end facade plus an async iterator over the stream.
- */
-export function updateChannel(): UpdateChannel {
-  const queue: SubagentUpdate[] = []
-  let closed = false
-  let waiter: { resolve: () => void } | undefined
-  const wake = (): void => {
-    if (waiter !== undefined) {
-      waiter.resolve()
-      waiter = undefined
-    }
-  }
-  return {
-    push(update) {
-      queue.push(update)
-      wake()
-    },
-    end() {
-      closed = true
-      wake()
-    },
-    async *[Symbol.asyncIterator]() {
-      while (true) {
-        while (queue.length > 0) {
-          yield queue.shift() as SubagentUpdate
-        }
-        if (closed) return
-        await new Promise<void>((resolve) => {
-          waiter = { resolve }
-        })
-      }
-    },
-  }
-}
-
 /**
  * Consume the complete SDK stream, require one strict success plus normal
  * iterator completion, and surface live text deltas while the model streams.
@@ -195,18 +152,6 @@ export async function consumeClaudeQuery(
     output: [{ type: 'text', text: answer }],
     stopReason: 'completed',
     ...includeContinuationId && continuationId !== undefined ? { continuationId } : {},
-  }
-}
-
-/**
- * The live update stream for one query: drains the channel fed by
- * {@link consumeClaudeQuery}.
- * @param channel - the run's update channel.
- * @returns the updates async iterable for the published run.
- */
-export function claudeUpdates(channel: UpdateChannel): AsyncIterable<SubagentUpdate> {
-  return {
-    [Symbol.asyncIterator]: () => channel[Symbol.asyncIterator](),
   }
 }
 
@@ -248,36 +193,6 @@ export async function disposeClaudeCodeChild(
       failures,
       'subagent-claude-code: query and process cleanup failed',
     )
-  }
-}
-
-/** Harness effort ids accepted for Claude Code, mapped to the SDK vocabulary. */
-export const CLAUDE_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const
-/** A Claude Code effort identifier accepted by the native SDK. */
-export type ClaudeEffort = (typeof CLAUDE_EFFORTS)[number]
-
-/**
- * Map a Harness effort id to Claude Code SDK options.
- * @param effort - Harness reasoning effort identifier, or `undefined` for native default.
- * @returns SDK effort or thinking options.
- */
-export function claudeEffortOptions(effort: string | undefined): Pick<Options, 'effort' | 'thinking'> {
-  switch (effort) {
-    case undefined:
-    case 'high':
-      return {}
-    case 'off':
-      return { thinking: { type: 'disabled' } }
-    case 'low':
-      return { effort: 'low' }
-    case 'medium':
-      return { effort: 'medium' }
-    case 'xhigh':
-      return { effort: 'xhigh' }
-    case 'max':
-      return { effort: 'max' }
-    default:
-      throw new Error(`subagent-claude-code: unsupported reasoning effort ${JSON.stringify(effort)}`)
   }
 }
 
@@ -416,7 +331,7 @@ export async function startClaudeCodeRun(
   return subprocessRunHandle({
     id: SessionId(randomUUID()),
     result,
-    updates: claudeUpdates(channel),
+    updates: channel,
     signal: request.signal,
     onAbort,
     requestCancel,

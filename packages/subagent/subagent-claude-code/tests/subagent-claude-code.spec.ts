@@ -20,7 +20,7 @@ import {
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import SubagentRuntime from '@deepseek-ai/dsh-subagent'
+import SubagentRuntime, { updateChannel } from '@deepseek-ai/dsh-subagent'
 import type {
   SubprocessHandle,
   SubprocessOutcome,
@@ -43,7 +43,6 @@ import {
   successfulResult,
   textTask,
   type ClaudeCodeRunSpec,
-  updateChannel,
 } from '../src/run.ts'
 
 type QueryFactory = (params: {

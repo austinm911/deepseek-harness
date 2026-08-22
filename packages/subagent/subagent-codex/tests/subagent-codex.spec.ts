@@ -24,7 +24,8 @@ import {
   type CodexRunSpec,
 } from '../src/run.ts'
 import { listCodexModels } from '../src/models.ts'
-import { codexEffort, CodexAppServerWire, harnessEffort } from '../src/wire.ts'
+import { CodexAppServerWire } from '../src/wire.ts'
+import { codexEffort, harnessEffort } from '../src/effort.ts'
 
 type JsonObject = Record<string, unknown>
 

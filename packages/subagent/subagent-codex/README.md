@@ -18,19 +18,12 @@ Local cancellation wins the result race and maps to `aborted`. A failed turn who
 
 The provider advertises no optional start-time capabilities and reports `inheritsParentContext: false`. Codex receives the standalone text task and the parent Session cwd, but not the parent conversation, persona, tool filter, depth policy, or structured-output contract. The ephemeral Codex thread id and turn id stay private to this run and are never persisted in the parent Session.
 
-## Model discovery
-
-`listCodexModels(spec)` is a package export beside the provider, not part of the subagent contract. It starts one app-server child through [`dsh-subprocess`](../../subprocess/subprocess/README.md), performs the `initialize` handshake, sends `model/list`, and disposes the child; the child's stdin stays open until disposal because the app-server exits on EOF without answering outstanding requests. Each returned model carries its app-server id, display name, accepted Harness effort ids, and its own default effort; entries the app-server marks `hidden` are withheld, and one request covers the catalog because the server answers a null cursor. A missing CLI, a refused request, an early exit, a reply this protocol adapter does not accept, or a missed `timeoutMs` deadline rejects — [`dsh-llm-engine`](../../llm/llm-engine/README.md) is the consumer and owns what to advertise then.
-
-Both directions of the effort mapping live here: the app-server levels `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` pair with the Harness ids `off`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. A run's `reasoningEffort` and a discovered model's reported levels both cross that one table, and a level outside it fails loud.
-
 ## Configuration
 
 | Key | Default | Meaning |
 |---|---|---|
 | `env` | `{}` | Explicit child environment layered over the subprocess seam's credential-scrubbed parent environment. |
 | `disposeGraceMs` | `3000` | Positive finite grace in milliseconds, no greater than [`MAX_TIMER_DELAY_MS`](../../util/timeout/README.md), between the shared process-tree owner's termination tiers; disposal then waits for whole-tree exit. |
-| `continuation` | `false` | Whether runs persist their thread and resume earlier conversations (`continueFrom` via `thread/resume`). Persistent threads write under the native Codex home; the one-shot default keeps threads ephemeral. |
 
 Production resolves `codex` from `PATH` and uses the host's native Codex configuration and authentication. The plugin does not install Codex, select a model, create `CODEX_HOME`, log in, or probe a version. Credential-shaped ambient variables are removed by the subprocess seam, so an API key intended for the child must be supplied explicitly in `env`; ordinary ambient values such as `PATH` and `HOME` remain available unless overridden.
 
@@ -62,7 +55,7 @@ The standalone composition below shows the complete explicit capability. A Profi
 
 ## Product compatibility and evidence
 
-The production wire intentionally implements only the app-server methods required by this one-shot contract plus `model/list`. Development evidence is pinned to `@openai/codex@0.147.0` / `codex-cli 0.147.0`, and the recorded `model/list` reply comes from `codex-cli 0.148.0`; the npm package is a test-only dependency, and deployments still supply `codex` on `PATH`.
+The production wire intentionally implements only the app-server methods required by this one-shot contract. Development evidence is pinned to `@openai/codex@0.147.0` / `codex-cli 0.147.0`; the npm package is a test-only dependency, and deployments still supply `codex` on `PATH`.
 
 ## Model Experience
 
@@ -96,7 +89,7 @@ Append-only: foreground adds one result after the reusable parent prefix, while 
 
 ## Known Limitations and Deferred Work
 
-- **One fresh process, thread, and turn per run unless `continuation: true`** — with continuation, threads persist and resume (`thread/resume`); the one-shot default keeps threads ephemeral. Live `item/agentMessage/delta` text streams on `SubagentRun.updates` while the turn runs.
+- **One fresh process, thread, and turn per run** — there is no continuation, resume, pooling, progress stream, or product-session persistence.
 - **Host-managed product installation and account state** — a missing or incompatible `codex`, configuration error, or authentication failure is surfaced as a startup or run error; the plugin provides no installer, login flow, or runtime version gate.
 - **Compatibility is pinned by development evidence** — upgrading from the verified 0.147.0 protocol baseline requires regenerating upstream schema evidence and rerunning handshake, answer-selection, approval, cancellation, keyless real-product, and credentialed DeepSeek nonce tests.
 - **No human approval path** — known unattended approval requests are denied and unknown server requests fail closed; deployments cannot configure an allow policy through this package.

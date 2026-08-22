@@ -8,50 +8,13 @@
  */
 
 import type { Readable, Writable } from 'node:stream'
-
-/**
- * The app-server reasoning-effort vocabulary paired with the Harness effort id
- * for each level, in ascending order. The two vocabularies differ in one
- * name: the lowest level is `minimal` on the wire and `off` in the Harness.
- */
-const EFFORT_VOCABULARY: readonly (readonly [harness: string, codex: string])[] = [
-  ['off', 'minimal'],
-  ['low', 'low'],
-  ['medium', 'medium'],
-  ['high', 'high'],
-  ['xhigh', 'xhigh'],
-  ['max', 'max'],
-  ['ultra', 'ultra'],
-]
-
-/**
- * Map a Harness effort id to the Codex app-server effort vocabulary.
- * @param effort - Harness reasoning effort identifier.
- * @returns Codex app-server effort value.
- */
-export function codexEffort(effort: string): string {
-  const level = EFFORT_VOCABULARY.find(([harness]) => harness === effort)
-  if (level === undefined) {
-    throw new Error(`subagent-codex: unsupported reasoning effort ${JSON.stringify(effort)}`)
-  }
-  return level[1]
-}
-
-/**
- * Map an app-server effort value back to its Harness effort id.
- * @param effort - Codex app-server effort value.
- * @returns Harness reasoning effort identifier.
- */
-export function harnessEffort(effort: string): string {
-  const level = EFFORT_VOCABULARY.find(([, codex]) => codex === effort)
-  if (level === undefined) {
-    throw new Error(`subagent-codex: app-server reported unsupported reasoning effort ${JSON.stringify(effort)}`)
-  }
-  return level[0]
-}
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { SubagentResult, SubagentUpdate } from '@deepseek-ai/dsh-subagent'
+import type { SubagentResult } from '@deepseek-ai/dsh-subagent'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
+
+import { updateChannel } from '@deepseek-ai/dsh-subagent'
+import type { SubagentUpdate } from '@deepseek-ai/dsh-subagent'
+import { codexEffort, harnessEffort } from './effort.ts'
 
 type JsonObject = Record<string, unknown>
 
@@ -147,9 +110,7 @@ export class CodexAppServerWire {
   }> = []
   private lastFinalAnswer: string | undefined
   private lastUnphasedAnswer: string | undefined
-  private readonly updateQueue: SubagentUpdate[] = []
-  private updateWaiter: { resolve: () => void } | undefined
-  private updatesClosed = false
+  private readonly updatesChannel = updateChannel()
   private closed = false
 
   constructor(
@@ -275,34 +236,13 @@ export class CodexAppServerWire {
     this.threadId = id
   }
 
-  /** Wake one pending update iterator consumer. */
-  private wakeUpdates(): void {
-    if (this.updateWaiter !== undefined) {
-      this.updateWaiter.resolve()
-      this.updateWaiter = undefined
-    }
-  }
-
   /**
    * Live text updates while the run streams, terminating when the turn settles.
    * @returns An async iterable of incremental assistant text updates.
    */
   updates(): AsyncIterable<SubagentUpdate> {
-    return {
-      [Symbol.asyncIterator]: async function* (this: CodexAppServerWire) {
-        while (true) {
-          while (this.updateQueue.length > 0) {
-            yield this.updateQueue.shift() as SubagentUpdate
-          }
-          if (this.updatesClosed || this.closed) return
-          await new Promise<void>((resolve) => {
-            this.updateWaiter = { resolve }
-          })
-        }
-      }.bind(this),
-    }
+    return this.updatesChannel
   }
-
   /**
    * Submit the one text-only task and wait for this thread/turn's authoritative
    * terminal notification.
@@ -353,8 +293,7 @@ export class CodexAppServerWire {
         ...(this.continuation && this.threadId !== undefined ? { continuationId: this.threadId } : {}),
       }
     } finally {
-      this.updatesClosed = true
-      this.wakeUpdates()
+      this.updatesChannel.end()
     }
   }
 
@@ -385,8 +324,7 @@ export class CodexAppServerWire {
   close(): void {
     if (this.closed) return
     this.closed = true
-    this.updatesClosed = true
-    this.wakeUpdates()
+    this.updatesChannel.end()
     this.input.off('end', this.onInputEnd)
     this.transport.close()
   }
@@ -487,8 +425,7 @@ export class CodexAppServerWire {
         return
       }
       if (id !== this.turnId) return
-      this.updateQueue.push({ kind: 'text-delta', text: string(params.delta, 'item/agentMessage/delta text') })
-      this.wakeUpdates()
+      this.updatesChannel.push({ kind: 'text-delta', text: string(params.delta, 'item/agentMessage/delta text') })
       return
     }
     if (method === 'turn/started') {
@@ -527,8 +464,7 @@ export class CodexAppServerWire {
       return
     }
     if (method !== 'turn/completed') return
-    this.updatesClosed = true
-    this.wakeUpdates()
+    this.updatesChannel.end()
     const threadId = string(params.threadId, 'turn/completed thread id')
     if (threadId !== this.threadId) return
     const turn = object(params.turn, 'turn/completed turn')
