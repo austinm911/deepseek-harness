@@ -104,6 +104,48 @@ const GENERIC_SKIPS: readonly GenericSkip[] = [
   // GROUP_ORDER holds `packages/<group>/` directory names, not package names.
   { file: 'scripts/gen-module-graph.ts', upstream: ['cordis'] },
   { file: 'scripts/gen-doc-graphs.ts', upstream: ['cordis'] },
+  // The self-modification feature's event namespace is `cordis/<event>`, named
+  // after the feature domain the way `subagent/start` and `session/created`
+  // are, so these quoted strings are event ids on a typed event map and not
+  // package subpaths. Renaming them would rename the events themselves and
+  // break every producer/consumer pair. `tool-cordis/src/api-catalog.ts` and
+  // the two generated docs restate the same ids from their generators.
+  ...[
+    'docs/event-producer-consumer.md',
+    'docs/event-producer-consumer.zh.md',
+    'docs/subsystems/extensions.md',
+    'docs/subsystems/extensions.zh.md',
+    'packages/api/remotes/src/remote-events.ts',
+    'packages/extensions/cordis-client-runner/src/client/index.ts',
+    'packages/extensions/cordis-client-runner/src/client/runtime.ts',
+    'packages/extensions/cordis-client-runner/tests/orchestrator.client.spec.ts',
+    'packages/extensions/cordis-client-runner/tests/plugin.client.spec.ts',
+    'packages/extensions/cordis-host-runner/src/index.ts',
+    'packages/extensions/cordis-host-runner/src/inspect-registry.ts',
+    'packages/extensions/cordis-host-runner/src/types.ts',
+    'packages/extensions/cordis-host-runner/tests/helpers.ts',
+    'packages/extensions/cordis-host-runner/tests/runner.spec.ts',
+    'packages/extensions/cordis-host-runner/tests/versioning.spec.ts',
+    'packages/extensions/tool-cordis/src/api-catalog.ts',
+    'packages/extensions/tool-cordis/src/providers.ts',
+    'packages/extensions/ui-cordis/src/client/inventory.ts',
+  ].map(file => ({ file, upstream: ['cordis'] as const })),
+  // `cordis` is also the client locale namespace the Cordis panel registers and
+  // every one of its rows reads through `PropsLocale` and `t()`. The namespace
+  // is a lookup key into the locale document, so the scoped name would resolve
+  // nothing. `ui-cordis/src/client/index.ts` registers the namespace AND
+  // listens to the events above, so both reasons apply to it.
+  ...[
+    'packages/client/ui-settings-plugin-inventory/src/client/PluginInventorySettingsTab.tsx',
+    'packages/extensions/ui-cordis/src/client/CordisActionRow.tsx',
+    'packages/extensions/ui-cordis/src/client/CordisDefineRow.tsx',
+    'packages/extensions/ui-cordis/src/client/CordisPanel.tsx',
+    'packages/extensions/ui-cordis/src/client/CordisRunRow.tsx',
+    'packages/extensions/ui-cordis/src/client/index.ts',
+    'packages/extensions/ui-cordis/src/client/locales.ts',
+  ].map(file => ({ file, upstream: ['cordis'] as const })),
+  // Maps package-group and locale-namespace ids to their doc pages.
+  { file: 'scripts/gen-cordis-catalog.ts', upstream: ['cordis'] },
 ]
 
 /** A string that must appear exactly `count` times once the rescope has run. */
