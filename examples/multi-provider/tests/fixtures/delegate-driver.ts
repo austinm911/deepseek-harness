@@ -11,7 +11,7 @@
  */
 
 import { boot, resolveConfigPath } from '@deepseek-ai/dsh-app-boot'
-import { textOfBlocks } from '@deepseek-ai/dsh-llm'
+import { textOfBlocks } from '@deepseek-ai/dsh-llm-engine'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-subagent'
 

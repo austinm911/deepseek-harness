@@ -12,7 +12,8 @@
 
 import { boot, resolveConfigPath } from '@deepseek-ai/dsh-app-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { lastAssistantText, SessionId } from '@deepseek-ai/dsh-session'
+import { lastAssistantText } from '@deepseek-ai/dsh-llm-engine'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 
 const [configPath, engine, secret] = process.argv.slice(2)

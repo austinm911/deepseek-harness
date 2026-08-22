@@ -18,6 +18,8 @@ import z from '@deepseek-ai/schemastery'
 import { assertPositiveFinite } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { ENGINE_ROUTES, EngineLlmAdapter, type EngineAdapterOptions } from './adapter.ts'
+export { textOfBlocks } from './content.ts'
+export { lastAssistantText } from './assistant-text.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'llm-engine'

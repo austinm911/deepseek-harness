@@ -20,8 +20,8 @@ import {
   LlmAdapter,
   ReasoningEffortId,
   resolveRetryPolicy,
-  textOfBlocks,
 } from '@deepseek-ai/dsh-llm'
+import { textOfBlocks } from './content.ts'
 import type {
   GenerateOptions,
   LlmModelInfo,

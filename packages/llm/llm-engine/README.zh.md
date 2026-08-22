@@ -20,7 +20,7 @@
 
 每个 `claude-code` 模型都公布 `off`／`low`／`medium`／`high`／`xhigh`／`max` 这些推理努力级别，调用方省略时 harness 物化 `high`。每个被发现的 `codex` 模型只公布它自己报告的级别，因此 `xhigh`、`max` 与 `ultra` 会出现在接受它们的模型上，默认值也用该模型自己报告的值；所选模型没有报告的级别会在任何 CLI 启动之前被拒绝。Codex `native` 公布完整的 app-server 词汇（harness 的 `off` 即协议上的 `minimal`）且不带 harness 默认值，因此省略级别时 CLI 自己的设置保持不变。
 
-`model/list` 不报告容量，因此 `codex` 路由上的每个模型都采用 `codexContextWindow`，且不发送输出上限。当该查询无法应答时——`PATH` 上没有 `codex`、CLI 未登录、`codexDiscoveryTimeoutMs` 期限到达，或应答内容不被 app-server 协议适配器接受——该路由只公布 `native`，并通过 `ctx.logger.warn` 指明原因。绝不臆造模型 id，也不用固定列表顶替，因此选择器永远不会提供已安装 CLI 已经删除的 id。
+`model/list` 不报告容量，因此 `codex` 路由上的每个模型都采用 `codexContextWindow`，且不发送输出上限。该查询本身是 `dsh-subagent-codex` 的 `listCodexModels(spec)`：一个 app-server 子进程、一次握手、一次 `model/list`，检查每个条目报告的默认努力度确实在该条目报告的努力度之内，然后释放子进程。当它无法应答时——`PATH` 上没有 `codex`、CLI 未登录、`codexDiscoveryTimeoutMs` 期限到达，或应答内容不被 app-server 协议适配器接受——该路由只公布 `native`，并通过 `ctx.logger.warn` 指明原因。绝不臆造模型 id，也不用固定列表顶替，因此选择器永远不会提供已安装 CLI 已经删除的 id。
 
 ## 组合
 
@@ -37,7 +37,7 @@
   name: '@deepseek-ai/dsh-subagent-claude-code'
 ```
 
-不需要密钥：只要 `claude` 已登录 claude.ai 和／或 `codex` 已登录 ChatGPT。
+不需要 API 密钥。每个 CLI 各自认证：`claude` 对 claude.ai，`codex` 对 ChatGPT（`~/.codex/auth.json`）。Claude Code 接受交互式登录（操作系统钥匙串，或 `~/.claude/.credentials.json`），也接受 `claude setup-token` 产生的订阅令牌。环境中的凭据**不会**到达子进程：[subprocess 缝](../../subprocess/subprocess/README.md)会剥离凭据形状的名称，因此 `CLAUDE_CODE_OAUTH_TOKEN`——以及 SDK 同样接受的 `ANTHROPIC_API_KEY`——只有在后端行通过 `env` 显式转发时才能到达 CLI。`@deepseek-ai/dsh-multi-provider` 包正是为此转发 `CLAUDE_CODE_OAUTH_TOKEN`；缺少该转发时，仅凭该令牌认证的宿主会以 `ENGINE_FAILURE` 和 CLI 自己的 `Not logged in` 文本失败。
 
 | 键 | 默认值 | 含义 |
 |---|---|---|

@@ -1,16 +1,17 @@
 /**
  * Last-assistant-text aggregation over a session event range.
- * @module @deepseek-ai/dsh-session/assistant-text
+ * @module @deepseek-ai/dsh-llm-engine/assistant-text
  */
 
-import type { SessionEvent } from './types.ts'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 /**
  * The text of the last non-empty assistant message at or after `fromSeq`.
- * Used by one-shot drivers (headless, engine sessions) that print a session's
- * final answer from its durable event log: every driver must agree on which
- * assistant text is "the answer", so the aggregation lives with the event
- * type instead of being re-derived per driver.
+ * One-shot drivers that print a session's final answer from its durable event
+ * log share this aggregation so they agree on which assistant text is "the
+ * answer". Events before `fromSeq` and events before the interval's
+ * `turn/start` are ignored, so a driver reading a session that already holds
+ * earlier turns reports only its own run.
  * @param events - the session's event stream.
  * @param fromSeq - first event index belonging to the owned run interval.
  * @returns the concatenated text blocks of the last assistant message whose

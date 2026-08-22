@@ -20,7 +20,7 @@ The `claude-code` route advertises a pinned catalog — the Claude Opus/Sonnet/H
 
 Every `claude-code` model advertises the efforts `off`/`low`/`medium`/`high`/`xhigh`/`max`, and the harness materializes `high` when the caller omits one. Every discovered `codex` model advertises exactly the efforts it reported, so `xhigh`, `max`, and `ultra` appear on the models that accept them, with that model's own reported default; an effort the selected model does not report is refused before any CLI starts. Codex `native` advertises the whole app-server vocabulary (harness `off` is the wire's `minimal`) and no harness default, so an omitted effort leaves the CLI's own setting alone.
 
-`model/list` reports no capacity, so every model on the `codex` route takes `codexContextWindow` and sends no output cap. When the query cannot answer — no `codex` on `PATH`, a CLI that is not logged in, the `codexDiscoveryTimeoutMs` deadline passing, or a reply the app-server protocol adapter does not accept — the route advertises `native` alone and names the cause through `ctx.logger.warn`. No model id is invented and no pinned list stands in, so the picker never offers an id the installed CLI has dropped.
+`model/list` reports no capacity, so every model on the `codex` route takes `codexContextWindow` and sends no output cap. The query itself is `dsh-subagent-codex`'s `listCodexModels(spec)`: one app-server child, one handshake, a single `model/list`, a check that each entry's reported default effort is among the efforts that entry reports, then disposal. When it cannot answer — no `codex` on `PATH`, a CLI that is not logged in, the `codexDiscoveryTimeoutMs` deadline passing, or a reply the app-server protocol adapter does not accept — the route advertises `native` alone and names the cause through `ctx.logger.warn`. No model id is invented and no pinned list stands in, so the picker never offers an id the installed CLI has dropped.
 
 ## Composition
 
@@ -37,7 +37,7 @@ The `@deepseek-ai/dsh-multi-provider` bundle mounts this adapter together with t
   name: '@deepseek-ai/dsh-subagent-claude-code'
 ```
 
-No keys: `claude` must be logged into claude.ai and/or `codex` into ChatGPT.
+No API key. Each CLI authenticates itself: `claude` against claude.ai, `codex` against ChatGPT (`~/.codex/auth.json`). Claude Code accepts an interactive login (OS keychain, or `~/.claude/.credentials.json`) or a subscription token from `claude setup-token`. A credential in the ambient environment does **not** reach the child: the [subprocess seam](../../subprocess/subprocess/README.md) strips credential-shaped names, so `CLAUDE_CODE_OAUTH_TOKEN` — and `ANTHROPIC_API_KEY`, which the SDK also accepts — reaches the CLI only when a backend row forwards it explicitly through `env`. The `@deepseek-ai/dsh-multi-provider` pack forwards `CLAUDE_CODE_OAUTH_TOKEN` for exactly this reason; a host authenticated by that token alone fails with `ENGINE_FAILURE` and the CLI's own `Not logged in` text without it.
 
 | Key | Default | Meaning |
 |---|---|---|
