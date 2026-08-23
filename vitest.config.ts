@@ -101,8 +101,9 @@ const coverageExemptExcludes = coverageExemptRaw === '1'
   : []
 
 // These suites exercise process-global state, process APIs, or timing-sensitive process I/O
-// that worker threads cannot isolate reliably under aggregate gate contention.
-// Keep the narrow exception in forks while the rest of the inventory avoids per-file processes.
+// that worker threads cannot isolate reliably under aggregate gate contention. Process-bound
+// files run in forked workers one at a time, so process-tree, watcher, and local HTTP fixtures
+// do not overlap each other.
 const processBoundTests = [
   'packages/session/session-persistence-jsonl/tests/jsonl.spec.ts',
   'packages/subagent/subagent-acp/tests/subagent-acp.spec.ts',
@@ -111,6 +112,11 @@ const processBoundTests = [
   'packages/context/time-context/tests/time-context.spec.ts',
   'packages/llm/llm-pi-ai/tests/adapter.spec.ts',
   'packages/boot/app-boot/tests/app-boot.spec.ts',
+  'packages/boot/app-boot/tests/hmr-config.spec.ts',
+  'packages/boot/app-boot/tests/user-patches.spec.ts',
+  'packages/sdk/server/tests/plugin-apply.spec.ts',
+  'packages/sdk/server/tests/server.spec.ts',
+  'packages/test-support/acp-snapshot/tests/harness.spec.ts',
   'packages/workflow/workflow-worker-thread/tests/session.spec.ts',
 ]
 
@@ -121,8 +127,10 @@ export default defineConfig({
     // .tsx: client component specs (jsdom via per-file @vitest-environment pragma).
     include: testIncludes,
     exclude: windowsUnsupportedTests,
-    // One coverage invocation aggregates both projects. Every suite forks for
-    // Node stability; process-bound suites stay separate for inventory control.
+    // Every project forks for Node stability. Process-bound files are a
+    // serial project because their process trees, watchers, and local HTTP
+    // servers are host resources rather than per-worker state.
+    // The serial project currently contains 13 files; keep additions narrow.
     projects: [
       {
         plugins: [pathsPlugin(), standardDecoratorPlugin()],
@@ -148,6 +156,7 @@ export default defineConfig({
           name: 'process-bound',
           execArgv: vitestExecArgv,
           pool: 'forks',
+          fileParallelism: false,
           setupFiles: ['./scripts/test-invariants.ts'],
           include: processBoundTests,
           exclude: [

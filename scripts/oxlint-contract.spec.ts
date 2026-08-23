@@ -39,9 +39,23 @@ function normalizedOutput(result: ReturnType<typeof runOxlint>): string {
   return `${result.stdout}${result.stderr}`.replaceAll('\\', '/')
 }
 
-async function writeContractConfig(suffix: string): Promise<string> {
+async function writeContractConfig(suffix: string, base = '.oxlintrc.json'): Promise<string> {
   const path = join(repositoryRoot, `.oxlintrc.contract-${suffix}.json`)
-  await writeFile(path, JSON.stringify({ extends: ['./.oxlintrc.json'], ignorePatterns: [] }))
+  const overrides = [{
+    files: ['**/*.ts'],
+    rules: {
+      '@stylistic/max-len': ['error', { code: 140 }],
+      '@stylistic/no-trailing-spaces': 'error',
+      '@stylistic/object-curly-spacing': ['error', 'always'],
+      '@stylistic/semi': ['error', 'never'],
+      'sonarjs/no-identical-functions': 'error',
+      'typescript/no-floating-promises': 'error',
+      'typescript/no-unnecessary-condition': 'error',
+    },
+    plugins: ['typescript'],
+    jsPlugins: ['eslint-plugin-sonarjs'],
+  }]
+  await writeFile(path, JSON.stringify({ extends: [`./${base}`], ignorePatterns: [], overrides }))
   return path
 }
 
@@ -76,6 +90,7 @@ probePromise()
       const clientScript = 'scripts/client-bundle-purity.spec.ts'
 
       const result = runOxlint([
+        '--no-ignore',
         '--config',
         relative(repositoryRoot, configPath),
         '--format',
@@ -110,7 +125,8 @@ probePromise()
   it('runs JavaScript compatibility and nursery rules', async () => {
     const suffix = randomUUID()
     const configPath = await writeContractConfig(suffix)
-    const path = join(repositoryRoot, 'scripts', `oxlint-contract-${suffix}.ts`)
+    const directory = join(repositoryRoot, `.oxlint-contract-${suffix}`)
+    const path = join(directory, 'probe.ts')
     const source = `export function firstProbe(): number {
   const first = 1
   const second = 2
@@ -131,8 +147,10 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
 `
 
     try {
+      await mkdir(directory, { recursive: true })
       await writeFile(path, source)
       const result = runOxlint([
+        '--no-ignore',
         '--config',
         relative(repositoryRoot, configPath),
         '--format',
@@ -148,7 +166,7 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
       expect(output).toContain('typescript(no-unnecessary-condition)')
     } finally {
       await Promise.all([
-        rm(path, { force: true }),
+        rm(directory, { recursive: true, force: true }),
         rm(configPath, { force: true }),
       ])
     }
@@ -230,11 +248,14 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
   it('reports an unused suppression', async () => {
     const suffix = randomUUID()
     const configPath = await writeContractConfig(suffix)
-    const path = join(repositoryRoot, 'scripts', `oxlint-contract-${suffix}.ts`)
+    const directory = join(repositoryRoot, `.oxlint-contract-${suffix}`)
+    const path = join(directory, 'probe.ts')
 
     try {
+      await mkdir(directory, { recursive: true })
       await writeFile(path, '// oxlint-disable-next-line no-console\nexport const value = 1\n')
       const result = runOxlint([
+        '--no-ignore',
         '--config',
         relative(repositoryRoot, configPath),
         '--format',
@@ -248,7 +269,7 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
       expect(output).toContain('Unused oxlint-disable directive')
     } finally {
       await Promise.all([
-        rm(path, { force: true }),
+        rm(directory, { recursive: true, force: true }),
         rm(configPath, { force: true }),
       ])
     }
@@ -280,12 +301,16 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
     expect(stagedConfig.ignorePatterns).not.toContain('packages/typert/generator/tests/fixtures/type-model/**')
 
     const suffix = randomUUID()
-    const path = join(repositoryRoot, 'scripts', `staged-lint-probe-${suffix}.ts`)
+    const lintConfigPath = await writeContractConfig(suffix, '.oxlintrc.staged.json')
+    const directory = join(repositoryRoot, `.oxlint-contract-${suffix}`)
+    const path = join(directory, 'staged-lint-probe.ts')
     try {
+      await mkdir(directory, { recursive: true })
       await writeFile(path, 'export const value={answer:1};\n')
       const lint = runOxlint([
+        '--no-ignore',
         '--config',
-        relative(repositoryRoot, configPath),
+        relative(repositoryRoot, lintConfigPath),
         '--format',
         'unix',
         relative(repositoryRoot, path),
@@ -297,19 +322,26 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
       expect(output).toContain('@stylistic')
       expect(output).not.toContain('typescript(')
     } finally {
-      await rm(path, { force: true })
+      await Promise.all([
+        rm(directory, { recursive: true, force: true }),
+        rm(lintConfigPath, { force: true }),
+      ])
     }
   })
 
   it('preserves successful fix output channels', async () => {
     const suffix = randomUUID()
-    const path = join(repositoryRoot, 'scripts', `staged-lint-probe-${suffix}.ts`)
+    const lintConfigPath = await writeContractConfig(suffix, '.oxlintrc.staged.json')
+    const directory = join(repositoryRoot, `.oxlint-contract-${suffix}`)
+    const path = join(directory, 'staged-lint-probe.ts')
 
     try {
+      await mkdir(directory, { recursive: true })
       await writeFile(path, '// oxlint-disable-next-line no-console\nexport const value = 1\n')
       const result = runRepositoryOxlint([
+        '--no-ignore',
         '--config',
-        '.oxlintrc.staged.json',
+        lintConfigPath,
         '--format',
         'unix',
         '--fix',
@@ -321,19 +353,26 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
       expect(result.stdout).toContain('Unused oxlint-disable directive')
       expect(result.stderr).toBe('')
     } finally {
-      await rm(path, { force: true })
+      await Promise.all([
+        rm(directory, { recursive: true, force: true }),
+        rm(lintConfigPath, { force: true }),
+      ])
     }
   })
 
   it('prints only the final diagnostics when a fix retry still fails', async () => {
     const suffix = randomUUID()
-    const path = join(repositoryRoot, 'scripts', `staged-lint-probe-${suffix}.ts`)
+    const lintConfigPath = await writeContractConfig(suffix, '.oxlintrc.staged.json')
+    const directory = join(repositoryRoot, `.oxlint-contract-${suffix}`)
+    const path = join(directory, 'staged-lint-probe.ts')
 
     try {
+      await mkdir(directory, { recursive: true })
       await writeFile(path, `export const longProbe = ${'1 + '.repeat(80)}1\n`)
       const result = runRepositoryOxlint([
+        '--no-ignore',
         '--config',
-        '.oxlintrc.staged.json',
+        lintConfigPath,
         '--format',
         'unix',
         '--fix',
@@ -345,7 +384,10 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
       expect(result.status, output).toBe(1)
       expect(output.match(/@stylistic\(max-len\)/g)).toHaveLength(1)
     } finally {
-      await rm(path, { force: true })
+      await Promise.all([
+        rm(directory, { recursive: true, force: true }),
+        rm(lintConfigPath, { force: true }),
+      ])
     }
   })
 
@@ -353,7 +395,8 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
     'converges overlapping staged stylistic fixes through Oxlint under %s',
     async (fixFlag) => {
       const suffix = randomUUID()
-      const directory = join(repositoryRoot, 'scripts', `.oxlint-contract-${suffix}`)
+      const lintConfigPath = await writeContractConfig(suffix, '.oxlintrc.staged.json')
+      const directory = join(repositoryRoot, `.oxlint-contract-${suffix}`)
       const path = join(directory, 'fix.ts')
 
       try {
@@ -361,14 +404,17 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
         await writeFile(path, 'const value={answer:1};  \nconsole.log(value)\n')
 
         const relativePath = relative(repositoryRoot, path)
-        const lintResult = runRepositoryOxlint(['--config', '.oxlintrc.staged.json', fixFlag, relativePath])
+        const lintResult = runRepositoryOxlint(['--no-ignore', '--config', lintConfigPath, fixFlag, relativePath])
 
         expect(lintResult.error).toBeUndefined()
         expect(lintResult.status, normalizedOutput(lintResult)).toBe(0)
         expect(normalizedOutput(lintResult)).not.toContain('@stylistic')
         await expect(readFile(path, 'utf8')).resolves.toBe('const value={ answer:1 }\nconsole.log(value)\n')
       } finally {
-        await rm(directory, { recursive: true, force: true })
+        await Promise.all([
+          rm(directory, { recursive: true, force: true }),
+          rm(lintConfigPath, { force: true }),
+        ])
       }
     },
     20_000,
