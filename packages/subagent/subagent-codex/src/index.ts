@@ -27,16 +27,11 @@ import {
   type CodexRunSpec,
 } from './run.ts'
 
-export {
-  startCodexRun,
-  codexStartupFailure,
-  DEFAULT_DISPOSE_GRACE_MS,
-  DEFAULT_CODEX_PERMISSION_MODE,
-  CODEX_PERMISSION_MODES,
-} from './run.ts'
-export type { CodexRunSpec, CodexTurnRequest, CodexPermissionMode } from './run.ts'
+// The llm-engine chat routes drive runs and discovery directly, without a parent Agent.
+export { startCodexRun, DEFAULT_DISPOSE_GRACE_MS, CODEX_PERMISSION_MODES } from './run.ts'
+export type { CodexRunSpec, CodexPermissionMode } from './run.ts'
 export { listCodexModels } from './models.ts'
-export type { CodexModelInfo, CodexModelListSpec } from './models.ts'
+export type { CodexModelInfo } from './models.ts'
 
 export const name = 'subagent-codex'
 export const inject = ['subagents', 'subprocess']

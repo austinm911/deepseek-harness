@@ -36,7 +36,6 @@ import {
   claudeSpawnSpec,
   ManagedClaudeCodeProcess,
 } from './process.ts'
-import { claudeEffortOptions } from './effort.ts'
 
 /** Default POSIX grace between subprocess termination tiers. */
 export const DEFAULT_DISPOSE_GRACE_MS = 3_000
@@ -335,6 +334,28 @@ export async function disposeClaudeCodeChild(
     throw new ClaudeCodeFailure(facts, cause)
   }
   await child.done.catch(() => {})
+}
+
+/**
+ * Map a Harness effort id to SDK options: `off` disables thinking, omitted
+ * keeps the CLI setting.
+ * @throws on an id Claude Code does not accept.
+ */
+function claudeEffortOptions(effort: string | undefined): Pick<Options, 'effort' | 'thinking'> {
+  switch (effort) {
+    case undefined:
+      return {}
+    case 'off':
+      return { thinking: { type: 'disabled' } }
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+    case 'max':
+      return { effort }
+    default:
+      throw new Error(`subagent-claude-code: unsupported reasoning effort ${JSON.stringify(effort)}`)
+  }
 }
 
 /**

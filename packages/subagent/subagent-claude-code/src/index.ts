@@ -27,23 +27,11 @@ import {
   type ClaudeCodeRunSpec,
 } from './run.ts'
 
-export {
-  startClaudeCodeRun,
-  claudeCodeStartupFailure,
-  DEFAULT_DISPOSE_GRACE_MS,
-  DEFAULT_CLAUDE_CODE_PERMISSION_MODE,
-  CLAUDE_CODE_PERMISSION_MODES,
-} from './run.ts'
-export type {
-  ClaudeCodeRunSpec,
-  ClaudeCodeTurnRequest,
-  ClaudeCodePermissionMode,
-} from './run.ts'
+// The llm-engine chat routes drive runs and discovery directly, without a parent Agent.
+export { startClaudeCodeRun, CLAUDE_CODE_PERMISSION_MODES } from './run.ts'
+export type { ClaudeCodeRunSpec, ClaudeCodePermissionMode } from './run.ts'
 export { listClaudeCodeModels } from './models.ts'
-export type {
-  ClaudeCodeModelInfo,
-  ClaudeCodeModelListSpec,
-} from './models.ts'
+export type { ClaudeCodeModelInfo } from './models.ts'
 
 export const name = 'subagent-claude-code'
 export const inject = ['subagents', 'subprocess']

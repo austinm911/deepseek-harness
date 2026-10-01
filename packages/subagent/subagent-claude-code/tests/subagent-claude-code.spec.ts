@@ -58,8 +58,8 @@ type QueryFactory = (params: {
 
 const queryMock = vi.hoisted(() => vi.fn<QueryFactory>())
 
-const CLAUDE_AGENT_SDK_VERSION = '0.3.263'
-const CLAUDE_CODE_VERSION = '2.1.263'
+const CLAUDE_AGENT_SDK_VERSION = '0.3.286'
+const CLAUDE_CODE_VERSION = '2.1.286'
 const CLAUDE_PLATFORM_PACKAGES = [
   '@anthropic-ai/claude-agent-sdk-darwin-arm64',
   '@anthropic-ai/claude-agent-sdk-darwin-x64',
@@ -1097,7 +1097,7 @@ describe('query options and result mapping', () => {
 
   it('streams top-level text deltas and reports the session id once', async () => {
     const streamEvent = (
-      delta: { type: 'text_delta', text: string } | { type: 'thinking_delta', thinking: string },
+      delta: { type: 'text_delta'; text: string } | { type: 'thinking_delta'; thinking: string },
       parentToolUseId: string | null = null,
     ) => ({
       type: 'stream_event',
@@ -1900,18 +1900,19 @@ describe('model discovery', () => {
     }
   }
 
-  it('maps rows, drops the default row, and never sends a turn', async () => {
+  it('maps rows with versioned names, drops the default row, and never sends a turn', async () => {
     const fixture = fakeModelList(Promise.resolve([
-      { value: 'default', displayName: 'Default', description: 'd', supportsEffort: true, supportedEffortLevels: ['low'] },
-      { value: 'opus', displayName: 'Opus', description: 'o', supportsEffort: true, supportedEffortLevels: ['low', 'high', 'max'] },
-      { value: 'haiku', displayName: 'Haiku', description: 'h', supportsEffort: false, supportedEffortLevels: ['low'] },
-      { value: 'sonnet', displayName: 'Sonnet', description: 's' },
+      { value: 'default', displayName: 'Default', description: 'Sonnet 5.5 · Efficient', supportsEffort: true, supportedEffortLevels: ['low'] },
+      { value: 'opus', displayName: 'Opus', description: 'Opus 5.5 · Best for everyday, complex tasks', supportsEffort: true, supportedEffortLevels: ['low', 'high', 'max'] },
+      { value: 'haiku', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest for quick answers', supportsEffort: false, supportedEffortLevels: ['low'] },
+      // Versioned-name shape: the description is a tagline, so the name is the label.
+      { value: 'sonnet', displayName: 'Sonnet 5', description: 'Most efficient for everyday tasks' },
     ]))
 
     await expect(claudeCode.listClaudeCodeModels(listSpec(fixture))).resolves.toEqual([
-      { id: 'opus', displayName: 'Opus', efforts: ['low', 'high', 'max'] },
-      { id: 'haiku', displayName: 'Haiku', efforts: [] },
-      { id: 'sonnet', displayName: 'Sonnet', efforts: [] },
+      { id: 'opus', displayName: 'Opus 5.5', efforts: ['low', 'high', 'max'] },
+      { id: 'haiku', displayName: 'Haiku 4.5', efforts: [] },
+      { id: 'sonnet', displayName: 'Sonnet 5', efforts: [] },
     ])
     expect(fixture.options[0]).toMatchObject({
       cwd: '/workspace',

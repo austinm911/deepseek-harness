@@ -170,6 +170,21 @@ describe('EngineLlmAdapter.stream', () => {
     expect(sessions.get('session-1')).toEqual({ codex: 'thread-A', 'claude-code': 'claude-B' })
   })
 
+  it('drops a dead native id after a failed resumed turn, so the next turn starts fresh', async () => {
+    const sessions = new Map<string, NativeSessionIds>([['session-1', { codex: 'gone', 'claude-code': 'claude-B' }]])
+    const { engine } = adapter('/work', sessions)
+    backend.script = { deltas: [], nativeId: 'gone', result: { stopReason: 'error', output: [], diagnostic: 'No conversation found' } }
+    const failed = await collect(engine.stream(call()))
+    expect(failed.at(-1)).toMatchObject({
+      reason: { failure: { message: expect.stringContaining('next message starts a new Codex conversation') } },
+    })
+    expect(sessions.get('session-1')).toEqual({ 'claude-code': 'claude-B' })
+    backend.script = completed('fresh', 'thread-new')
+    await collect(engine.stream(call()))
+    expect(backend.codexSpecs.map(spec => (spec as CodexRunSpec).resumeThreadId)).toEqual(['gone', undefined])
+    expect(sessions.get('session-1')).toEqual({ codex: 'thread-new', 'claude-code': 'claude-B' })
+  })
+
   it('maps effort off to minimal for codex, keeps native model unset, and sends explicit models', async () => {
     const { engine } = adapter()
     backend.script = completed('ok')

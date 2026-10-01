@@ -26,6 +26,7 @@ import {
 export interface ClaudeCodeModelInfo {
   /** Value to send as SDK `model` (ModelInfo.value). */
   readonly id: string
+  /** Versioned name, e.g. "Opus 5.5"; some CLI replies carry only the alias ("Opus") in `displayName`. */
   readonly displayName: string
   /** SDK effort levels the model accepts (ModelInfo.supportedEffortLevels when supportsEffort, else []). */
   readonly efforts: readonly string[]
@@ -48,6 +49,9 @@ const STDERR_TAIL = { maxBytes: 16 * 1024 } as const
 const SUPPORTED_MODELS_REPLY = z.array(z.object({
   value: z.string().min(1),
   displayName: z.string(),
+  // Alias replies put the version here ("Opus 5.5 · Best for ..."); versioned
+  // replies use a plain tagline ("Most capable for ambitious work").
+  description: z.string().optional(),
   supportsEffort: z.boolean().optional(),
   supportedEffortLevels: z.array(z.string()).optional(),
 }))
@@ -87,7 +91,8 @@ export async function listClaudeCodeModels(
   const controller = new AbortController()
   let child: SubprocessHandle | undefined
   let query: Query | undefined
-  let result: readonly ClaudeCodeModelInfo[] | undefined
+  // Read only when no failure was recorded, which is exactly when it was assigned.
+  let result: readonly ClaudeCodeModelInfo[] = []
   let failure: Error | undefined
   using timer = deadline(undefined, spec.timeoutMs, TIMEOUT_CODE)
   try {
@@ -99,7 +104,7 @@ export async function listClaudeCodeModels(
           env: spec.env,
           permissionMode: 'dontAsk',
           disposeGraceMs: DEFAULT_DISPOSE_GRACE_MS,
-          spawn: (spawnSpec) => spec.spawn({
+          spawn: spawnSpec => spec.spawn({
             ...spawnSpec,
             stdio: { ...spawnSpec.stdio, stderr: STDERR_TAIL },
           }),
@@ -137,10 +142,12 @@ export async function listClaudeCodeModels(
     }
     result = parsed.data
       // llm-engine offers its own `native` entry for the CLI's default model.
-      .filter((row) => row.value !== 'default')
-      .map((row) => ({
+      .filter(row => row.value !== 'default')
+      .map(row => ({
         id: row.value,
-        displayName: row.displayName,
+        displayName: row.description?.includes(' · ') === true
+          ? row.description.slice(0, row.description.indexOf(' · ')).trim()
+          : row.displayName,
         efforts: row.supportsEffort === true ? row.supportedEffortLevels ?? [] : [],
       }))
   } catch (error: unknown) {
@@ -160,5 +167,5 @@ export async function listClaudeCodeModels(
     controller.abort()
   }
   if (failure !== undefined) throw failure
-  return result!
+  return result
 }

@@ -9,7 +9,7 @@
 本包是一个 Profile Bundle。其 `cordis.patch.yml` 会插入 `llm-engine` 行，因此装入 profile 即可：
 
 ```sh
-pnpm pack                                    # 在本目录执行
+pnpm pack                                    # in this directory
 dsh plugin --profile <name> add /path/to/deepseek-ai-dsh-llm-engine-<version>.tgz
 ```
 
@@ -20,7 +20,7 @@ desktop profile 由应用管理。请通过 **Settings → Plugins → Install**
 ## 行为
 
 - **提示。** 引擎只接收最新一条直接用户消息。上下文注入（AGENTS.md、skill 目录、工具结果）会被跳过。Harness 的系统提示、历史和工具从不发送。引擎在自己的进程中运行自己的工具，作用范围为会话的工作目录。
-- **续接。** `continuation` 开启（默认）时，每个 Harness 会话各保留一个原生 Codex thread 与一个 Claude 会话。它们的 id 存于 `llm_engine_sessions` 存储域，因此重启后重新打开的会话会续接同一段引擎对话。续接失败会使该轮失败，绝不会悄悄另起新对话。
+- **续接。** `continuation` 开启（默认）时，每个 Harness 会话各保留一个原生 Codex thread 与一个 Claude 会话。它们的 id 存于 `llm_engine_sessions` 存储域，因此重启后重新打开的会话会续接同一段引擎对话。续接的轮次失败（取消不算）时会丢弃已存的 id，并在错误中说明，因为原生对话可能已不存在（Claude Code 会清理旧的会话记录）。下一条消息随后开启新的引擎对话。
 - **流式输出。** 实时回答文本以增量形式流出。block-end 中的文本是引擎的最终回答。
 - **模型。** 每条路由在插件生命周期内向其打包的 CLI 查询一次目录：Codex 通过 app-server 的 `model/list`，Claude 通过 Agent SDK 的 `supportedModels()`。模型列在 `native`（CLI 配置的默认模型）之后。查询失败时只提供 `native`，并记录原因。目录中未列出的模型 id 仍可解析，因此已保存的会话照常可用，由 CLI 判断是否提供该模型。
 - **推理强度。** Harness 的 `off` 对应 Codex 的 `minimal` 与 Claude 的关闭思考，其余强度原样传递。

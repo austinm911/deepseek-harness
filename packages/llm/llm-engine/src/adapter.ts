@@ -25,6 +25,7 @@ import {
   resolveRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
 import type {
+  ContentBlock,
   GenerateOptions,
   LlmModelInfo,
   LlmModelReasoningInfo,
@@ -52,7 +53,6 @@ import {
   type ClaudeCodeModelInfo,
   type ClaudeCodePermissionMode,
 } from '@deepseek-ai/dsh-subagent-claude-code'
-import { textOfBlocks } from './content.ts'
 
 /** The engine routes this adapter serves. */
 export const ENGINE_ROUTES = ['claude-code', 'codex'] as const
@@ -141,6 +141,11 @@ function claudeRouteModel(model: ClaudeCodeModelInfo): RouteModel {
     name: model.displayName,
     reasoning: { efforts: ROUTE_EFFORTS['claude-code'].filter(effort => reported.has(effort.id)) },
   }
+}
+
+/** Every text block's text, in order; `''` when there is none. */
+function textOfBlocks(content: readonly ContentBlock[]): string {
+  return content.filter(block => block.type === 'text').map(block => block.text).join('')
 }
 
 /** Longest engine diagnostic carried into a failure message. */
@@ -398,7 +403,7 @@ export class EngineLlmAdapter extends LlmAdapter {
       run = await this.startRun(route, prompt, options, cwd, resume, deltas, (id) => { nativeId = id })
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
-      yield errorFinish(ENGINE_FAILURE_CODE, `engine ${JSON.stringify(route)} failed to start: ${message}`)
+      yield errorFinish(ENGINE_FAILURE_CODE, `engine ${JSON.stringify(route)} failed to start: ${message}${await this.forgetResume(sessionKey, route, resume)}`)
       return
     }
 
@@ -425,7 +430,7 @@ export class EngineLlmAdapter extends LlmAdapter {
     if (result.stopReason !== 'completed') {
       yield errorFinish(
         ENGINE_FAILURE_CODE,
-        `engine ${JSON.stringify(route)} finished with ${result.stopReason}${failureDetail(result)}`,
+        `engine ${JSON.stringify(route)} finished with ${result.stopReason}${failureDetail(result)}${await this.forgetResume(sessionKey, route, resume)}`,
       )
       return
     }
@@ -437,5 +442,19 @@ export class EngineLlmAdapter extends LlmAdapter {
     // Live deltas are a preview; the block-end text is the engine's final answer.
     yield { type: 'block-end', index: 0, block: { type: 'text', text } }
     yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+
+  /**
+   * A failed resumed turn drops the route's stored id. The native conversation
+   * may be gone (Claude Code prunes old transcripts, a Codex thread can be
+   * archived), and retrying a dead id would fail every later turn in the
+   * session. Cancellation never reaches here, so it keeps the id.
+   * @returns a message suffix naming the reset, or `''` when nothing was stored.
+   */
+  private async forgetResume(sessionKey: string | undefined, route: EngineRoute, resume: string | undefined): Promise<string> {
+    if (sessionKey === undefined || resume === undefined) return ''
+    const { [route]: _dropped, ...rest } = this.sessions.get(sessionKey) ?? {}
+    await this.sessions.put(sessionKey, rest)
+    return `; the next message starts a new ${ENGINE_NAMES[route]} conversation`
   }
 }
