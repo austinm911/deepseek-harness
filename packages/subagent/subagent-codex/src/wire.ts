@@ -183,8 +183,21 @@ async function raceAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T
   }
 }
 
+/** One visible model the connected app-server advertises through `model/list`. */
+export interface CodexModelInfo {
+  /** App-server model id, accepted as `thread/start` / `thread/resume` `model`. */
+  readonly id: string
+  /** Human-readable name for model selectors. */
+  readonly displayName: string
+  /** Wire effort ids this model accepts, in app-server order. */
+  readonly efforts: readonly string[]
+  /** The model's default wire effort, when reported. Always a member of `efforts`. */
+  readonly defaultEffort?: string
+}
+
 /**
- * One app-server connection and its single ephemeral thread/turn.
+ * One app-server connection and its single thread/turn (ephemeral unless the
+ * caller persists or resumes a native thread).
  *
  * The class deliberately exposes no generic request surface. Supporting
  * another product method must first become part of the provider contract.
@@ -206,6 +219,8 @@ export class CodexAppServerWire {
   }> = []
   private lastFinalAnswer: string | undefined
   private lastUnphasedAnswer: string | undefined
+  /** Phase of each current-turn agent message, learned from `item/started`. */
+  private readonly agentMessagePhases = new Map<string, unknown>()
   private diagnostic: string | undefined
   private failure: CodexWireFailureFacts | undefined
   private diagnosticOrder = 0
@@ -225,6 +240,8 @@ export class CodexAppServerWire {
     output: Writable,
     private readonly permissionMode: CodexPermissionMode,
     private readonly model?: string,
+    /** Live answer-text sink. A throw fails the run like any protocol error. */
+    private readonly onTextDelta?: (text: string) => void,
   ) {
     this.transport = new JsonRpcLineTransport(input, output)
     // Fatal protocol state can arrive after the current guarded operation has
@@ -281,23 +298,106 @@ export class CodexAppServerWire {
   }
 
   /**
-   * Create the run's private ephemeral thread and retain its identity.
+   * The models the connected app-server advertises, hidden entries excluded,
+   * following the `nextCursor` pagination until the server reports `null`.
+   * @param signal - discovery cancellation.
+   * @returns the visible models, in the app-server's own order.
+   */
+  async listModels(signal: AbortSignal): Promise<readonly CodexModelInfo[]> {
+    const models: CodexModelInfo[] = []
+    const seenCursors = new Set<string>()
+    let cursor: string | undefined
+    for (;;) {
+      const response = object(await this.guarded(this.transport.request(
+        'model/list',
+        cursor === undefined ? {} : { cursor },
+        signal,
+      ), signal), 'model/list response')
+      if (!Array.isArray(response.data)) {
+        throw new Error('subagent-codex: app-server returned invalid model/list data')
+      }
+      for (const entry of response.data) {
+        const model = object(entry, 'model/list entry')
+        if (model.hidden === true) continue
+        const supported = model.supportedReasoningEfforts
+        if (!Array.isArray(supported)) {
+          throw new Error('subagent-codex: app-server returned invalid model/list reasoning efforts')
+        }
+        const efforts = supported.map(level => string(
+          object(level, 'model/list reasoning effort').reasoningEffort,
+          'model/list reasoning effort id',
+        ))
+        const reportedDefault = model.defaultReasoningEffort
+        const defaultEffort = reportedDefault === undefined || reportedDefault === null
+          ? undefined
+          : string(reportedDefault, 'model/list default reasoning effort')
+        if (defaultEffort !== undefined && !efforts.includes(defaultEffort)) {
+          throw new Error('subagent-codex: app-server returned a default reasoning effort the model does not support')
+        }
+        models.push({
+          id: string(model.id, 'model/list entry id'),
+          displayName: string(model.displayName, 'model/list entry display name'),
+          efforts,
+          ...defaultEffort === undefined ? {} : { defaultEffort },
+        })
+      }
+      const next = response.nextCursor
+      if (next === undefined || next === null) return models
+      cursor = string(next, 'model/list next cursor')
+      if (seenCursors.has(cursor)) {
+        throw new Error('subagent-codex: app-server repeated a model/list cursor')
+      }
+      seenCursors.add(cursor)
+    }
+  }
+
+  /**
+   * Create the run's private thread and retain its identity.
    * @param cwd - parent Session workspace.
    * @param signal - unpublished-start cancellation.
+   * @param persist - request a non-ephemeral thread that can be resumed later.
+   * @returns the new native thread id.
    */
-  async startThread(cwd: string, signal: AbortSignal): Promise<void> {
+  async startThread(cwd: string, signal: AbortSignal, persist = false): Promise<string> {
     const response = object(await this.guarded(this.transport.request('thread/start', {
       cwd,
-      ephemeral: true,
+      ephemeral: !persist,
       ...this.model === undefined ? {} : { model: this.model },
       ...THREAD_PERMISSION_PARAMS[this.permissionMode],
     }, signal), signal), 'thread/start response')
     const thread = object(response.thread, 'thread/start thread')
     const id = string(thread.id, 'thread/start thread id')
-    if (thread.ephemeral !== true) {
+    if (!persist && thread.ephemeral !== true) {
       throw new Error('subagent-codex: app-server did not create an ephemeral thread')
     }
+    if (persist && thread.ephemeral !== false) {
+      throw new Error('subagent-codex: app-server did not create a persistent thread')
+    }
     this.threadId = id
+    return id
+  }
+
+  /**
+   * Resume a persisted native thread instead of creating one. The model and
+   * permission mode apply to the resumed thread exactly as on `thread/start`.
+   * @param threadId - native thread id returned by an earlier persistent run.
+   * @param cwd - parent Session workspace.
+   * @param signal - unpublished-start cancellation.
+   * @returns the resumed native thread id.
+   */
+  async resumeThread(threadId: string, cwd: string, signal: AbortSignal): Promise<string> {
+    const response = object(await this.guarded(this.transport.request('thread/resume', {
+      threadId,
+      cwd,
+      ...this.model === undefined ? {} : { model: this.model },
+      ...THREAD_PERMISSION_PARAMS[this.permissionMode],
+    }, signal), signal), 'thread/resume response')
+    const thread = object(response.thread, 'thread/resume thread')
+    if (string(thread.id, 'thread/resume thread id') !== threadId) {
+      throw new Error('subagent-codex: app-server resumed a different thread')
+    }
+    this.threadId = threadId
+    return threadId
   }
 
   /**
@@ -305,11 +405,13 @@ export class CodexAppServerWire {
    * terminal notification.
    * @param texts - already validated task text blocks.
    * @param signal - local cancellation for the published run.
+   * @param effort - wire reasoning effort for this turn; omitted keeps the CLI setting.
    * @returns the shared subagent result.
    */
   async runTurn(
     texts: readonly string[],
     signal: AbortSignal,
+    effort?: string,
   ): Promise<SubagentResult> {
     const completion = Promise.withResolvers<{
       readonly params: JsonObject
@@ -321,6 +423,7 @@ export class CodexAppServerWire {
       const response = object(await this.guarded(this.transport.request('turn/start', {
         threadId,
         input: texts.map(text => ({ type: 'text', text, text_elements: [] })),
+        ...effort === undefined ? {} : { effort },
       }, signal), signal), 'turn/start response')
       const turn = object(response.turn, 'turn/start turn')
       this.commitTurnId(string(turn.id, 'turn/start turn id'))
@@ -634,6 +737,38 @@ export class CodexAppServerWire {
     params: JsonObject,
     order?: number,
   ): void {
+    if (method === 'item/started' || method === 'item/agentMessage/delta') {
+      const threadId = string(params.threadId, `${method} thread id`)
+      if (threadId !== this.threadId) return
+      const id = string(params.turnId, `${method} turn id`)
+      if (this.turnId === undefined) {
+        if (this.turnCompleted !== undefined) {
+          this.observePendingTurnId(id)
+          this.earlyTurnNotifications.push({
+            method,
+            params,
+            order: this.nextObservationOrder(),
+          })
+        }
+        return
+      }
+      if (id !== this.turnId) return
+      if (method === 'item/started') {
+        const item = object(params.item, 'item/started item')
+        if (item.type !== 'agentMessage') return
+        this.agentMessagePhases.set(string(item.id, 'item/started item id'), item.phase)
+        return
+      }
+      const itemId = string(params.itemId, 'item/agentMessage/delta item id')
+      if (!this.agentMessagePhases.has(itemId)) return
+      const phase = this.agentMessagePhases.get(itemId)
+      if (phase !== 'final_answer' && phase !== null && phase !== undefined) return
+      if (typeof params.delta !== 'string') {
+        throw new Error('subagent-codex: app-server returned an invalid item/agentMessage/delta text')
+      }
+      this.onTextDelta?.(params.delta)
+      return
+    }
     if (method === 'turn/started') {
       const threadId = string(params.threadId, 'turn/started thread id')
       if (threadId !== this.threadId) return

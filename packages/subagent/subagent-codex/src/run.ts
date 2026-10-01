@@ -152,7 +152,20 @@ export interface CodexRunSpec {
   readonly spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle
   /** Diagnostic sink for a post-publication error flattened into a result. */
   readonly onError?: (error: Error, stopReason: SubagentStopReason) => void
+  /** Resume this persisted native thread (`thread/resume`) instead of `thread/start`. */
+  readonly resumeThreadId?: string
+  /** Start a non-ephemeral thread so it can be resumed later. Default false (ephemeral). Ignored when resuming. */
+  readonly persistThread?: boolean
+  /** App-server wire effort for this turn (`turn/start.effort`), e.g. 'low' | 'medium' | 'high'. Omitted = CLI setting. */
+  readonly effort?: string
+  /** Called once with the thread id after thread/start or thread/resume succeeds. */
+  readonly onThreadId?: (threadId: string) => void
+  /** Called with each live text delta of an agent message that is (or may be) the final answer. */
+  readonly onTextDelta?: (text: string) => void
 }
+
+/** Only the fields startCodexRun reads; lets non-subagent callers (llm-engine) start a turn without a parent Agent. */
+export type CodexTurnRequest = Pick<SubagentStartRequest, 'prompt' | 'signal'>
 
 function thrown(value: unknown): Error {
   /* v8 ignore next -- typed subprocess/wire failures reject with Error. */
@@ -218,12 +231,12 @@ export async function disposeCodexChild(
 
 /**
  * Start the real `codex app-server --stdio` child and publish its one-shot run.
- * @param request - resolved shared subagent request.
+ * @param request - task prompt and cancellation signal.
  * @param spec - Workspace, environment, process service, and diagnostic policy.
- * @returns the published run after initialization and ephemeral thread creation.
+ * @returns the published run after initialization and thread creation or resumption.
  */
 export async function startCodexRun(
-  request: SubagentStartRequest,
+  request: CodexTurnRequest,
   spec: CodexRunSpec,
 ): Promise<SubagentRun> {
   const texts = textTask(request.prompt)
@@ -252,6 +265,7 @@ export async function startCodexRun(
     child.stdin as NonNullable<SubprocessHandle['stdin']>,
     spec.permissionMode,
     spec.model,
+    spec.onTextDelta,
   )
   const onStderr = (chunk: Buffer | string): void => {
     const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
@@ -317,7 +331,13 @@ export async function startCodexRun(
     wire.start()
     await Promise.race([wire.initialize(request.signal), processFailure])
     startupStage = 'thread-start'
-    await Promise.race([wire.startThread(spec.cwd, request.signal), processFailure])
+    const threadId = await Promise.race([
+      spec.resumeThreadId === undefined
+        ? wire.startThread(spec.cwd, request.signal, spec.persistThread ?? false)
+        : wire.resumeThread(spec.resumeThreadId, spec.cwd, request.signal),
+      processFailure,
+    ])
+    spec.onThreadId?.(threadId)
   } catch (error: unknown) {
     request.signal.removeEventListener('abort', onAbort)
     const cancelledBeforeCleanup = runAbort.signal.aborted
@@ -381,7 +401,7 @@ export async function startCodexRun(
     attempt: async () => {
       try {
         const terminal = await Promise.race([
-          wire.runTurn(texts, runAbort.signal),
+          wire.runTurn(texts, runAbort.signal, spec.effort),
           publishedProcessFailure,
         ])
         if (terminal.stopReason === 'completed') return terminal

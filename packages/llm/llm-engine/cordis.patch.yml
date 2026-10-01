@@ -1,0 +1,10 @@
+# Optional Profile Bundle: register the `claude-code` and `codex` chat-model
+# routes. Both run the packaged CLIs with their native logins; no API key.
+- insert:
+    - id: llm-engine
+      name: '@deepseek-ai/dsh-llm-engine'
+      config:
+        # The subprocess seam strips credential-shaped variables from children,
+        # so a `claude setup-token` token reaches the CLI only through this
+        # forward. Unset yields `{}`, leaving keychain / ~/.claude logins alone.
+        claudeEnv: !!js "process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined ? {} : { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN }"

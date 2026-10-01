@@ -1035,6 +1035,101 @@ describe('query options and result mapping', () => {
     })
     expect(onPermissionDenied).toHaveBeenCalledOnce()
   })
+
+  it('resumes and persists the native session only when asked', () => {
+    const child = fakeChild()
+    const base: ClaudeCodeRunSpec = {
+      cwd: '/workspace',
+      permissionMode: DEFAULT_CLAUDE_CODE_PERMISSION_MODE,
+      env: {},
+      disposeGraceMs: 17,
+      spawn: () => child.handle,
+    }
+    const oneShot = claudeQueryOptions(base, new AbortController(), () => {}, () => {})
+    expect(oneShot.persistSession).toBe(false)
+    expect(oneShot).not.toHaveProperty('resume')
+    expect(oneShot).not.toHaveProperty('includePartialMessages')
+
+    const resumed = claudeQueryOptions({
+      ...base,
+      resumeSessionId: 'native-session-1',
+      persistSession: true,
+      onTextDelta: () => {},
+    }, new AbortController(), () => {}, () => {})
+    expect(resumed).toMatchObject({
+      resume: 'native-session-1',
+      persistSession: true,
+      includePartialMessages: true,
+    })
+  })
+
+  it('maps off to disabled thinking and other efforts to the SDK effort level', () => {
+    const child = fakeChild()
+    const options = (effort: string | undefined) => claudeQueryOptions({
+      cwd: '/workspace',
+      permissionMode: DEFAULT_CLAUDE_CODE_PERMISSION_MODE,
+      env: {},
+      disposeGraceMs: 17,
+      spawn: () => child.handle,
+      ...effort === undefined ? {} : { effort },
+    }, new AbortController(), () => {}, () => {})
+
+    const off = options('off')
+    expect(off.thinking).toEqual({ type: 'disabled' })
+    expect(off).not.toHaveProperty('effort')
+    const high = options('high')
+    expect(high.effort).toBe('high')
+    expect(high).not.toHaveProperty('thinking')
+    expect(options('max').effort).toBe('max')
+    const inherited = options(undefined)
+    expect(inherited).not.toHaveProperty('effort')
+    expect(inherited).not.toHaveProperty('thinking')
+  })
+
+  it('rejects an unsupported effort before SDK startup', async () => {
+    const fixture = fakeRun()
+    await expect(startClaudeCodeRun(
+      request(),
+      { ...fixture.spec, effort: 'extreme' },
+    )).rejects.toThrow('unsupported reasoning effort "extreme"')
+    expect(queryMock).not.toHaveBeenCalled()
+  })
+
+  it('streams top-level text deltas and reports the session id once', async () => {
+    const streamEvent = (
+      delta: { type: 'text_delta', text: string } | { type: 'thinking_delta', thinking: string },
+      parentToolUseId: string | null = null,
+    ) => ({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta },
+      parent_tool_use_id: parentToolUseId,
+      uuid: '00000000-0000-4000-8000-000000000002',
+      session_id: 'native-session-2',
+    }) as SDKMessage
+    const fixture = fakeRun([
+      { type: 'system', subtype: 'init', session_id: 'native-session-2' } as SDKMessage,
+      streamEvent({ type: 'thinking_delta', thinking: 'hidden' }),
+      streamEvent({ type: 'text_delta', text: 'Hel' }),
+      streamEvent({ type: 'text_delta', text: 'subagent' }, 'tool-1'),
+      streamEvent({ type: 'text_delta', text: 'lo' }),
+      { ...success('Hello'), session_id: 'native-session-2' },
+    ])
+    const onSessionId = vi.fn()
+    const deltas: string[] = []
+    const run = await startClaudeCodeRun(
+      { prompt: [{ type: 'text', text: 'hi' }], signal: new AbortController().signal },
+      { ...fixture.spec, onSessionId, onTextDelta: text => deltas.push(text) },
+    )
+    await expect(run.result).resolves.toEqual({
+      output: [{ type: 'text', text: 'Hello' }],
+      stopReason: 'completed',
+    })
+    await run.dispose()
+    expect(fixture.options[0]?.includePartialMessages).toBe(true)
+    expect(deltas).toEqual(['Hel', 'lo'])
+    expect(onSessionId).toHaveBeenCalledOnce()
+    expect(onSessionId).toHaveBeenCalledWith('native-session-2')
+  })
 })
 
 describe('run publication, cancellation, and settlement', () => {
@@ -1766,5 +1861,98 @@ describe('query and process disposal', () => {
     expect(result).not.toBe('timeout')
     expect(errorCause(result)).toBe(waitFailure)
     expect(child.terminate).toHaveBeenCalledOnce()
+  })
+})
+
+describe('model discovery', () => {
+  interface ModelListFixture {
+    readonly child: FakeChild
+    readonly close: Mock<() => void>
+    readonly spawnSpecs: SubprocessSpawnSpec[]
+    readonly options: Options[]
+    readonly firstPromptRead: Promise<IteratorResult<unknown>>[]
+  }
+
+  function fakeModelList(reply: Promise<unknown>): ModelListFixture {
+    const child = fakeChild()
+    const close = vi.fn<() => void>()
+    const fixture: ModelListFixture = { child, close, spawnSpecs: [], options: [], firstPromptRead: [] }
+    queryMock.mockImplementation(({ prompt, options }) => {
+      fixture.options.push(options)
+      fixture.firstPromptRead.push(
+        (prompt as unknown as AsyncIterable<unknown>)[Symbol.asyncIterator]().next(),
+      )
+      options.spawnClaudeCodeProcess!(sdkSpawnOptions({ cwd: options.cwd! }))
+      return { close, supportedModels: () => reply } as unknown as Query
+    })
+    return fixture
+  }
+
+  function listSpec(fixture: ModelListFixture, timeoutMs = 1_000) {
+    return {
+      cwd: '/workspace',
+      timeoutMs,
+      env: { ANTHROPIC_API_KEY: 'fake-key' },
+      spawn: (spawnSpec: SubprocessSpawnSpec) => {
+        fixture.spawnSpecs.push(spawnSpec)
+        return fixture.child.handle
+      },
+    }
+  }
+
+  it('maps rows, drops the default row, and never sends a turn', async () => {
+    const fixture = fakeModelList(Promise.resolve([
+      { value: 'default', displayName: 'Default', description: 'd', supportsEffort: true, supportedEffortLevels: ['low'] },
+      { value: 'opus', displayName: 'Opus', description: 'o', supportsEffort: true, supportedEffortLevels: ['low', 'high', 'max'] },
+      { value: 'haiku', displayName: 'Haiku', description: 'h', supportsEffort: false, supportedEffortLevels: ['low'] },
+      { value: 'sonnet', displayName: 'Sonnet', description: 's' },
+    ]))
+
+    await expect(claudeCode.listClaudeCodeModels(listSpec(fixture))).resolves.toEqual([
+      { id: 'opus', displayName: 'Opus', efforts: ['low', 'high', 'max'] },
+      { id: 'haiku', displayName: 'Haiku', efforts: [] },
+      { id: 'sonnet', displayName: 'Sonnet', efforts: [] },
+    ])
+    expect(fixture.options[0]).toMatchObject({
+      cwd: '/workspace',
+      permissionMode: 'dontAsk',
+      persistSession: false,
+      env: expect.objectContaining({ ANTHROPIC_API_KEY: 'fake-key' }),
+    })
+    expect(fixture.options[0]).not.toHaveProperty('settingSources')
+    expect(fixture.spawnSpecs[0]!.stdio.stderr).not.toBe('inherit')
+    // The prompt iterable ends without ever yielding a user message.
+    await expect(fixture.firstPromptRead[0]).resolves.toEqual({ done: true, value: undefined })
+    expect(fixture.close).toHaveBeenCalledOnce()
+    expect(fixture.child.terminate).toHaveBeenCalledOnce()
+    expect(fixture.child.waitForExit).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a malformed reply after disposing the child', async () => {
+    const fixture = fakeModelList(Promise.resolve([{ value: 'opus' }]))
+
+    await expect(claudeCode.listClaudeCodeModels(listSpec(fixture)))
+      .rejects.toThrow(/malformed supportedModels reply/)
+    expect(fixture.close).toHaveBeenCalledOnce()
+    expect(fixture.child.waitForExit).toHaveBeenCalledOnce()
+  })
+
+  it('rejects on timeout after closing the query and waiting for the tree', async () => {
+    const fixture = fakeModelList(new Promise<never>(() => {}))
+
+    await expect(claudeCode.listClaudeCodeModels(listSpec(fixture, 20)))
+      .rejects.toThrow(/timed out after 20ms/)
+    expect(fixture.close).toHaveBeenCalledOnce()
+    expect(fixture.child.terminate).toHaveBeenCalledOnce()
+    expect(fixture.child.waitForExit).toHaveBeenCalledOnce()
+  })
+
+  it('rejects when the CLI exits before replying', async () => {
+    const fixture = fakeModelList(new Promise<never>(() => {}))
+    fixture.child.settle({ exitCode: 1, signal: null })
+
+    await expect(claudeCode.listClaudeCodeModels(listSpec(fixture)))
+      .rejects.toThrow(/exited before listing models \(exit code: 1; signal: null\)/)
+    expect(fixture.child.waitForExit).toHaveBeenCalledOnce()
   })
 })

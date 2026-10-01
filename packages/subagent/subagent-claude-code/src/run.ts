@@ -36,6 +36,7 @@ import {
   claudeSpawnSpec,
   ManagedClaudeCodeProcess,
 } from './process.ts'
+import { claudeEffortOptions } from './effort.ts'
 
 /** Default POSIX grace between subprocess termination tiers. */
 export const DEFAULT_DISPOSE_GRACE_MS = 3_000
@@ -162,7 +163,20 @@ export interface ClaudeCodeRunSpec {
   readonly spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle
   /** Host diagnostic sink for a product failure kept outside model-visible text. */
   readonly onError?: (error: Error, stopReason: SubagentStopReason) => void
+  /** Resume this native session id (SDK `resume`). */
+  readonly resumeSessionId?: string
+  /** Persist the native session so it can be resumed. Default false; sets SDK `persistSession`. */
+  readonly persistSession?: boolean
+  /** Harness effort id: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'. Omitted = CLI setting. */
+  readonly effort?: string
+  /** Called once with the SDK session id (first message carrying `session_id`). */
+  readonly onSessionId?: (sessionId: string) => void
+  /** Called with each live assistant text delta. When set, the query uses `includePartialMessages: true`. */
+  readonly onTextDelta?: (text: string) => void
 }
+
+/** Only the fields startClaudeCodeRun reads; lets llm-engine start a turn without a parent Agent. */
+export type ClaudeCodeTurnRequest = Pick<SubagentStartRequest, 'prompt' | 'signal'>
 
 function thrown(value: unknown): Error {
   /* v8 ignore next -- typed SDK and subprocess failures reject with Error. */
@@ -227,19 +241,37 @@ export function successfulResult(message: SDKResultMessage): string {
 
 /**
  * Consume the complete SDK stream and require one strict success plus normal
- * iterator completion.
+ * iterator completion, reporting session identity and live text deltas.
  * @param query - published official SDK query.
  * @param onPermissionDenied - records a safe fact when the SDK reports native denial.
  * @param onResult - records that the SDK supplied a terminal result message.
+ * @param observers - optional session-id and live text-delta sinks.
  * @returns the completed shared result.
  */
 export async function consumeClaudeQuery(
   query: AsyncIterable<SDKMessage>,
   onPermissionDenied?: () => void,
   onResult?: () => void,
+  observers: Pick<ClaudeCodeRunSpec, 'onSessionId' | 'onTextDelta'> = {},
 ): Promise<SubagentResult> {
   let answer: string | undefined
+  let sessionReported = false
   for await (const message of query) {
+    if (!sessionReported && typeof message.session_id === 'string') {
+      sessionReported = true
+      observers.onSessionId?.(message.session_id)
+    }
+    if (message.type === 'stream_event') {
+      // Deltas are live progress only; the terminal result stays authoritative.
+      if (
+        message.parent_tool_use_id === null
+        && message.event.type === 'content_block_delta'
+        && message.event.delta.type === 'text_delta'
+      ) {
+        observers.onTextDelta?.(message.event.delta.text)
+      }
+      continue
+    }
     if (message.type === 'system' && message.subtype === 'permission_denied') {
       onPermissionDenied?.()
       continue
@@ -306,12 +338,12 @@ export async function disposeClaudeCodeChild(
 }
 
 /**
- * Build the fixed official SDK options for one one-shot provider run.
- * @param spec - Workspace, environment, process service, and disposal policy.
+ * Build the official SDK options for one provider run.
+ * @param spec - Workspace, environment, process service, disposal, and turn policy.
  * @param controller - per-run cancellation owner.
  * @param capture - receives the shared child and SDK-facing process synchronously.
  * @param captureDiagnostic - receives safe facts from unattended interaction callbacks.
- * @returns options that inherit native settings while disabling persistence and user questions.
+ * @returns options that inherit native settings while disabling user questions.
  */
 export function claudeQueryOptions(
   spec: ClaudeCodeRunSpec,
@@ -326,8 +358,11 @@ export function claudeQueryOptions(
     abortController: controller,
     cwd: spec.cwd,
     ...spec.model === undefined ? {} : { model: spec.model },
+    ...claudeEffortOptions(spec.effort),
     env: { ...scrubbedParentEnv(), ...spec.env },
-    persistSession: false,
+    persistSession: spec.persistSession ?? false,
+    ...spec.resumeSessionId === undefined ? {} : { resume: spec.resumeSessionId },
+    ...spec.onTextDelta === undefined ? {} : { includePartialMessages: true },
     disallowedTools: spec.permissionMode === 'plan'
       ? ['AskUserQuestion', 'ExitPlanMode']
       : ['AskUserQuestion'],
@@ -377,16 +412,18 @@ export function claudeQueryOptions(
 }
 
 /**
- * Start one official Claude Agent SDK query and publish its one-shot run.
- * @param request - resolved shared subagent request.
- * @param spec - Workspace, environment, process service, and diagnostic policy.
+ * Start one official Claude Agent SDK query and publish its run.
+ * @param request - task prompt and cancellation signal; no parent Agent is required.
+ * @param spec - Workspace, environment, process service, diagnostic, and turn policy.
  * @returns the published run after both Query and the real CLI handle exist.
  */
 export async function startClaudeCodeRun(
-  request: SubagentStartRequest,
+  request: ClaudeCodeTurnRequest,
   spec: ClaudeCodeRunSpec,
 ): Promise<SubagentRun> {
   const prompt = textTask(request.prompt)
+  // Reject an unsupported effort id before any SDK startup can hide it.
+  claudeEffortOptions(spec.effort)
   if (request.signal.aborted) {
     throw new Error('subagent-claude-code: request was aborted before SDK startup')
   }
@@ -532,7 +569,7 @@ export async function startClaudeCodeRun(
             ))
           }, () => {
             receivedResult = true
-          }),
+          }, spec),
           publishedProcessFailure,
         ])
       } catch (error: unknown) {

@@ -28,6 +28,7 @@ import {
   textTask,
   type CodexRunSpec,
 } from '../src/run.ts'
+import { listCodexModels } from '../src/models.ts'
 import { CodexAppServerWire } from '../src/wire.ts'
 
 const { hostStderrWrite } = vi.hoisted(() => ({
@@ -2307,5 +2308,274 @@ describe('disposeCodexChild', () => {
     expect(String(disposalError)).not.toContain('SECRET_TOKEN')
     child.settle()
     await disposal
+  })
+})
+
+describe('native session continuation and live text', () => {
+  async function startupThroughInitialize(child: FakeChild): Promise<void> {
+    const initialize = await child.peer.nextMethod('initialize')
+    child.peer.respond(initialize, { userAgent: 'codex-cli 0.153.4' })
+    await child.peer.nextMethod('initialized')
+  }
+
+  it('resumes a persisted thread without thread/start and reports its id', async () => {
+    const child = fakeChild()
+    const onThreadId = vi.fn()
+    const starting = startCodexRun(
+      { prompt: [{ type: 'text', text: 'next turn' }], signal: new AbortController().signal },
+      runSpec(child, {
+        resumeThreadId: 'thread-saved',
+        persistThread: true,
+        model: 'gpt-chat',
+        onThreadId,
+      }),
+    )
+    await startupThroughInitialize(child)
+    const threadFrame = await child.peer.next(frame =>
+      frame.method === 'thread/start' || frame.method === 'thread/resume')
+    expect(threadFrame.method).toBe('thread/resume')
+    expect(threadFrame.params).toEqual({
+      threadId: 'thread-saved',
+      cwd: process.cwd(),
+      model: 'gpt-chat',
+      approvalPolicy: 'never',
+    })
+    child.peer.respond(threadFrame, { thread: { id: 'thread-saved', ephemeral: false } })
+    const run = await starting
+    expect(onThreadId).toHaveBeenCalledExactlyOnceWith('thread-saved')
+
+    const next = await child.peer.next(frame =>
+      frame.method === 'thread/start' || frame.method === 'turn/start')
+    expect(next.method).toBe('turn/start')
+    expect((next.params as JsonObject).threadId).toBe('thread-saved')
+    child.peer.send(
+      { id: next.id, result: { turn: { id: 'turn-1' } } },
+      agentMessage('resumed answer', 'final_answer', 'turn-1', 'thread-saved'),
+      turnCompleted('completed', 'turn-1', 'thread-saved'),
+    )
+    await expect(run.result).resolves.toEqual({
+      output: [{ type: 'text', text: 'resumed answer' }],
+      stopReason: 'completed',
+    })
+    await run.dispose()
+  })
+
+  it('fails startup when the resumed thread is unknown instead of starting a new one', async () => {
+    const child = fakeChild()
+    const onThreadId = vi.fn()
+    const starting = startCodexRun(
+      request(),
+      runSpec(child, { resumeThreadId: 'thread-missing', onThreadId }),
+    )
+    await startupThroughInitialize(child)
+    const resume = await child.peer.nextMethod('thread/resume')
+    child.peer.send({ id: resume.id, error: { code: -32600, message: 'no rollout found' } })
+    await expect(starting)
+      .rejects.toThrow(expectedFailureDiagnostic('thread-start', 'unknown'))
+    expect(onThreadId).not.toHaveBeenCalled()
+    expect(child.terminate).toHaveBeenCalledOnce()
+  })
+
+  it('starts a persistent thread and sends the per-turn effort', async () => {
+    const child = fakeChild()
+    const onThreadId = vi.fn()
+    const starting = startCodexRun(
+      request(),
+      runSpec(child, { persistThread: true, effort: 'high', onThreadId }),
+    )
+    await startupThroughInitialize(child)
+    const threadStart = await child.peer.nextMethod('thread/start')
+    expect(threadStart.params).toEqual({
+      cwd: process.cwd(),
+      ephemeral: false,
+      approvalPolicy: 'never',
+    })
+    child.peer.respond(threadStart, { thread: { id: 'thread-new', ephemeral: false } })
+    const run = await starting
+    expect(onThreadId).toHaveBeenCalledExactlyOnceWith('thread-new')
+    const turnStart = await child.peer.nextMethod('turn/start')
+    expect(turnStart.params).toEqual({
+      threadId: 'thread-new',
+      input: [{ type: 'text', text: 'do the task', text_elements: [] }],
+      effort: 'high',
+    })
+    child.peer.send(
+      { id: turnStart.id, result: { turn: { id: 'turn-1' } } },
+      agentMessage('answer', 'final_answer', 'turn-1', 'thread-new'),
+      turnCompleted('completed', 'turn-1', 'thread-new'),
+    )
+    await expect(run.result).resolves.toMatchObject({ stopReason: 'completed' })
+    await run.dispose()
+  })
+
+  it('rejects a persistent thread request answered with an ephemeral thread', async () => {
+    const child = fakeChild()
+    const starting = startCodexRun(request(), runSpec(child, { persistThread: true }))
+    await startupThroughInitialize(child)
+    const threadStart = await child.peer.nextMethod('thread/start')
+    child.peer.respond(threadStart, { thread: { id: 'thread-1', ephemeral: true } })
+    await expect(starting)
+      .rejects.toThrow(expectedFailureDiagnostic('thread-start', 'unknown'))
+  })
+
+  it('streams only final-answer and unphased deltas of the current turn', async () => {
+    const deltas: string[] = []
+    const { child, run, turnStart } = await publishRun(fakeChild(), undefined, {
+      onTextDelta: (text) => { deltas.push(text) },
+    })
+    const started = (id: string, phase: unknown, turnId = 'turn-1', threadId = 'thread-1'): JsonObject => ({
+      method: 'item/started',
+      params: {
+        threadId,
+        turnId,
+        startedAtMs: 0,
+        item: { type: 'agentMessage', id, text: '', phase },
+      },
+    })
+    const delta = (itemId: string, text: string, turnId = 'turn-1', threadId = 'thread-1'): JsonObject => ({
+      method: 'item/agentMessage/delta',
+      params: { threadId, turnId, itemId, delta: text },
+    })
+    // Frames that arrive before the turn/start response are replayed in order.
+    child.peer.send(
+      started('msg-early', 'final_answer'),
+      delta('msg-early', 'early '),
+    )
+    await nextTask()
+    expect(deltas).toEqual([])
+    child.peer.respond(turnStart, { turn: { id: 'turn-1' } })
+    await nextTask()
+    expect(deltas).toEqual(['early '])
+    child.peer.send(
+      started('msg-commentary', 'commentary'),
+      delta('msg-commentary', 'thinking out loud'),
+      started('msg-null', null),
+      delta('msg-null', 'unphased '),
+      {
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          startedAtMs: 0,
+          item: { type: 'agentMessage', id: 'msg-absent', text: '' },
+        },
+      },
+      delta('msg-absent', 'absent '),
+      delta('msg-unknown', 'never started'),
+      started('msg-other-thread', 'final_answer', 'turn-1', 'thread-2'),
+      delta('msg-other-thread', 'other thread', 'turn-1', 'thread-2'),
+      started('msg-other-turn', 'final_answer', 'turn-2'),
+      delta('msg-other-turn', 'other turn', 'turn-2'),
+      started('msg-final', 'final_answer'),
+      delta('msg-final', 'final'),
+      agentMessage('commentary', 'commentary'),
+      agentMessage('the final', 'final_answer'),
+      turnCompleted('completed'),
+    )
+    await expect(run.result).resolves.toEqual({
+      output: [{ type: 'text', text: 'the final' }],
+      stopReason: 'completed',
+    })
+    expect(deltas).toEqual(['early ', 'unphased ', 'absent ', 'final'])
+    await run.dispose()
+  })
+})
+
+describe('listCodexModels', () => {
+  function modelEntry(overrides: JsonObject = {}): JsonObject {
+    return {
+      id: 'gpt-a',
+      displayName: 'GPT A',
+      hidden: false,
+      supportedReasoningEfforts: [
+        { reasoningEffort: 'low', description: '' },
+        { reasoningEffort: 'medium', description: '' },
+        { reasoningEffort: 'high', description: '' },
+      ],
+      defaultReasoningEffort: 'medium',
+      ...overrides,
+    }
+  }
+
+  async function initialized(child: FakeChild): Promise<void> {
+    const initialize = await child.peer.nextMethod('initialize')
+    child.peer.respond(initialize, { userAgent: 'codex-cli 0.153.4' })
+    await child.peer.nextMethod('initialized')
+  }
+
+  it('follows pagination, excludes hidden models, and keeps stderr captured', async () => {
+    const child = fakeChild()
+    const spawn = vi.fn(() => child.handle)
+    const listing = listCodexModels({
+      cwd: '/workspace',
+      timeoutMs: 5_000,
+      env: { CODEX_HOME: '/codex-home' },
+      spawn,
+    })
+    await initialized(child)
+    const first = await child.peer.nextMethod('model/list')
+    expect(first.params).toEqual({})
+    child.peer.respond(first, {
+      data: [
+        modelEntry(),
+        modelEntry({ id: 'gpt-hidden', displayName: 'Hidden', hidden: true }),
+      ],
+      nextCursor: 'page-2',
+    })
+    const second = await child.peer.nextMethod('model/list')
+    expect(second.params).toEqual({ cursor: 'page-2' })
+    child.peer.respond(second, {
+      data: [modelEntry({
+        id: 'gpt-b',
+        displayName: 'GPT B',
+        supportedReasoningEfforts: [{ reasoningEffort: 'xhigh', description: '' }],
+        defaultReasoningEffort: null,
+      })],
+      nextCursor: null,
+    })
+    await expect(listing).resolves.toEqual([
+      { id: 'gpt-a', displayName: 'GPT A', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+      { id: 'gpt-b', displayName: 'GPT B', efforts: ['xhigh'] },
+    ])
+    expect(spawn).toHaveBeenCalledWith({
+      argv: codexAppServerArgv(),
+      cwd: '/workspace',
+      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: { maxBytes: 4_096 } },
+      graceMs: DEFAULT_DISPOSE_GRACE_MS,
+      env: { CODEX_HOME: '/codex-home' },
+    })
+    expect(child.terminate).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an entry whose default effort is not among its efforts', async () => {
+    const child = fakeChild()
+    const listing = listCodexModels({
+      cwd: '/workspace',
+      timeoutMs: 5_000,
+      env: {},
+      spawn: () => child.handle,
+    })
+    await initialized(child)
+    const list = await child.peer.nextMethod('model/list')
+    child.peer.respond(list, {
+      data: [modelEntry({ defaultReasoningEffort: 'minimal' })],
+      nextCursor: null,
+    })
+    await expect(listing).rejects.toThrow('default reasoning effort the model does not support')
+    expect(child.terminate).toHaveBeenCalledOnce()
+  })
+
+  it('rejects and disposes the child when model/list misses the deadline', async () => {
+    const child = fakeChild()
+    const listing = listCodexModels({
+      cwd: '/workspace',
+      timeoutMs: 20,
+      env: {},
+      spawn: () => child.handle,
+    })
+    await initialized(child)
+    await child.peer.nextMethod('model/list')
+    await expect(listing).rejects.toThrow('model/list did not answer within 20ms')
+    expect(child.terminate).toHaveBeenCalledOnce()
   })
 })
