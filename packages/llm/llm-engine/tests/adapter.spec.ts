@@ -1,8 +1,10 @@
 /**
  * Engine adapter behavior with the backends' run starters replaced by scripted
- * fakes: stream grammar, per-session native resume, effort/model mapping,
- * refusal surfaces, and codex catalog fallback. No product process starts.
+ * fakes: stream grammar, per-session native resume and dead-resume reset,
+ * effort/model mapping, refusal surfaces, and catalog discovery. No product
+ * process starts.
  */
+/* oxlint-disable typescript/no-unsafe-assignment -- Vitest asymmetric matchers are typed as any. */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'

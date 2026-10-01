@@ -1918,7 +1918,7 @@ describe('model discovery', () => {
       cwd: '/workspace',
       permissionMode: 'dontAsk',
       persistSession: false,
-      env: expect.objectContaining({ ANTHROPIC_API_KEY: 'fake-key' }),
+      env: expect.objectContaining({ ANTHROPIC_API_KEY: 'fake-key' }) as unknown,
     })
     expect(fixture.options[0]).not.toHaveProperty('settingSources')
     expect(fixture.spawnSpecs[0]!.stdio.stderr).not.toBe('inherit')
